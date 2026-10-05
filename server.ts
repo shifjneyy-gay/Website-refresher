@@ -118,18 +118,40 @@ async function executeTargetCycle(targetId: string) {
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout for fast turnaround
 
-    const response = await fetch(fetchUrl.toString(), {
-      method: 'GET',
+    // Use HEAD for ping-only mode to save bandwidth, otherwise GET
+    const httpMethod = target.refreshMode === 'ping' ? 'HEAD' : 'GET';
+
+    let response = await fetch(fetchUrl.toString(), {
+      method: httpMethod,
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (KeepAlive-MultiPinger)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (AutoRefresher/Pro)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
       },
     }).finally(() => clearTimeout(timeoutId));
+
+    // If server rejects HEAD with 405, retry with GET
+    if (httpMethod === 'HEAD' && response.status === 405) {
+      const getController = new AbortController();
+      const getTimeout = setTimeout(() => getController.abort(), 10000);
+      response = await fetch(fetchUrl.toString(), {
+        method: 'GET',
+        signal: getController.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (AutoRefresher/Pro)',
+          'Cache-Control': 'no-cache',
+        },
+      }).finally(() => clearTimeout(getTimeout));
+    }
+
+    // Immediately cancel and discard body stream to keep Node heap usage ultra-low (<25MB)
+    if (response.body) {
+      response.body.cancel().catch(() => {});
+    }
 
     latencyMs = Math.round(performance.now() - startTime);
     statusCode = response.status;
@@ -152,7 +174,7 @@ async function executeTargetCycle(targetId: string) {
     const error = err as Error;
     const isTimeout = error.name === 'AbortError';
     statusCode = isTimeout ? 408 : 502;
-    statusText = isTimeout ? 'Request Timeout (15s)' : (error.message || 'Fetch Failed');
+    statusText = isTimeout ? 'Request Timeout (10s)' : (error.message || 'Fetch Failed');
     isOk = false;
     errorDetail = error.message;
 
@@ -264,8 +286,15 @@ function loadPersistedRunnerState() {
 
       if (saved && Array.isArray(saved.targets) && saved.targets.length > 0) {
         for (const t of saved.targets) {
+          const minSec = Number(t.randomMinSeconds) || 10;
+          const maxSec = Number(t.randomMaxSeconds) || 45;
+          const safeMin = minSec >= maxSec ? 10 : minSec;
+          const safeMax = minSec >= maxSec ? 45 : maxSec;
+
           targets.set(t.id, {
             ...t,
+            randomMinSeconds: safeMin,
+            randomMaxSeconds: safeMax,
             runnerStatus: t.runnerStatus || 'idle',
             stats: t.stats || {
               totalRefreshes: 0,
@@ -321,11 +350,11 @@ function loadPersistedRunnerState() {
     console.error('[Auto-Refresher Error] Failed to load runner state:', err);
   }
 
-  // Ensure at least one default target exists
+  // Ensure at least two default targets exist for multi-refresher demo
   if (targets.size === 0) {
-    const defaultTarget: ServerTargetState = {
+    const defaultTarget1: ServerTargetState = {
       id: 'target-1',
-      name: 'Primary Site',
+      name: 'Primary Web Service',
       url: 'https://example.com',
       runnerStatus: 'idle',
       intervalType: 'random',
@@ -347,15 +376,41 @@ function loadPersistedRunnerState() {
       },
       lastPing: null,
     };
-    targets.set(defaultTarget.id, defaultTarget);
+    const defaultTarget2: ServerTargetState = {
+      id: 'target-2',
+      name: 'API Keep-Alive Node',
+      url: 'https://httpbin.org/get',
+      runnerStatus: 'idle',
+      intervalType: 'random',
+      fixedSeconds: 20,
+      randomMinSeconds: 15,
+      randomMaxSeconds: 40,
+      refreshMode: 'ping',
+      useCacheBuster: true,
+      maxCycles: 0,
+      cycleCount: 0,
+      nextRefreshTimestamp: null,
+      lastRefreshAt: null,
+      stats: {
+        totalRefreshes: 0,
+        successfulRefreshes: 0,
+        failedRefreshes: 0,
+        averageLatencyMs: 0,
+        totalLatencyMs: 0,
+      },
+      lastPing: null,
+    };
+    targets.set(defaultTarget1.id, defaultTarget1);
+    targets.set(defaultTarget2.id, defaultTarget2);
   }
 }
 
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '256kb' }));
 
   // Load persisted states
   loadPersistedRunnerState();
@@ -526,7 +581,14 @@ async function startServer() {
     }
 
     target.runnerStatus = 'running';
-    scheduleTargetNextCycle(target.id, 1);
+    // Immediately calculate next interval and set next timestamp so clients see active countdown
+    const nextIntervalSec = calculateNextIntervalSeconds(target);
+    target.nextRefreshTimestamp = Date.now() + nextIntervalSec * 1000;
+
+    // Immediately execute with 0 delay
+    executeTargetCycle(target.id).catch((err) => {
+      console.error(`[Auto-Refresher Error] Immediate execution on start failed for target ${target.id}:`, err);
+    });
     persistRunnerState();
     res.json({ success: true, target });
   });
@@ -581,7 +643,11 @@ async function startServer() {
     for (const target of targets.values()) {
       if (target.url) {
         target.runnerStatus = 'running';
-        scheduleTargetNextCycle(target.id, 1);
+        const nextIntervalSec = calculateNextIntervalSeconds(target);
+        target.nextRefreshTimestamp = Date.now() + nextIntervalSec * 1000;
+        executeTargetCycle(target.id).catch((err) => {
+          console.error(`[Auto-Refresher Error] Immediate execution on start-all failed for target ${target.id}:`, err);
+        });
       }
     }
     persistRunnerState();

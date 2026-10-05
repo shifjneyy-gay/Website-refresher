@@ -100,9 +100,9 @@ export const LiveFrame: React.FC<LiveFrameProps> = ({
             <span className="w-2.5 h-2.5 rounded-full bg-zinc-600 inline-block" />
           </div>
 
-          <span className="hidden xl:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-[#20232c] text-zinc-300 border border-white/10">
-            <span className={`w-1.5 h-1.5 rounded-full ${isLoading ? 'bg-white animate-ping' : 'bg-white'}`} />
-            <span>{isLoading ? 'Reloading' : 'Live Preview'}</span>
+          <span className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-[#20232c] text-white border border-white/20 shadow-xs">
+            <span className={`w-2 h-2 rounded-full ${isLoading ? 'bg-white animate-ping' : 'bg-white'}`} />
+            <span>{isLoading ? 'Refreshing Target Website...' : 'Live Preview'}</span>
           </span>
         </div>
 
@@ -147,10 +147,21 @@ export const LiveFrame: React.FC<LiveFrameProps> = ({
         <div className="flex-1 min-w-0 max-w-sm lg:max-w-md mx-1 sm:mx-2 flex items-center bg-[#20232c] border border-white/10 rounded-lg px-2 sm:px-3 py-1 text-xs text-zinc-300 font-mono shadow-xs overflow-hidden">
           <span className="text-zinc-500 mr-1.5 text-[11px] shrink-0 font-mono">https://</span>
           <span className="truncate flex-1 min-w-0 text-white font-medium" title={url || 'No URL configured'}>
-            {cleanUrl ? cleanUrl.replace(/^https?:\/\//, '') : 'No target selected'}
+            {isLoading ? (
+              <span className="text-white font-bold animate-pulse flex items-center gap-1.5">
+                <RefreshCw className="w-3 h-3 text-white animate-spin shrink-0" />
+                Refreshing Target Website...
+              </span>
+            ) : cleanUrl ? (
+              cleanUrl.replace(/^https?:\/\//, '')
+            ) : (
+              'No target selected'
+            )}
           </span>
           {isLoading && (
-            <RefreshCw className="w-3 h-3 text-white animate-spin ml-1.5 shrink-0" />
+            <span className="text-[10px] font-mono text-zinc-400 ml-1.5 shrink-0 uppercase tracking-wider font-bold">
+              SYNC
+            </span>
           )}
         </div>
 
@@ -316,16 +327,17 @@ export const LiveFrame: React.FC<LiveFrameProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/60 backdrop-blur-[2px] pointer-events-none flex items-center justify-center z-20"
+              className="absolute inset-0 bg-[#101217]/75 backdrop-blur-[2px] pointer-events-none flex items-center justify-center z-30"
             >
               <motion.div
-                initial={{ scale: 0.9, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.9, opacity: 0 }}
-                className="bg-black px-4 py-2.5 rounded-2xl shadow-2xl border border-white/30 flex items-center gap-2.5 text-xs font-bold text-white glow-white-sm"
+                initial={{ scale: 0.88, opacity: 0, y: 10 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.95, opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="bg-[#181a22] px-6 py-3.5 rounded-2xl shadow-2xl border border-white/40 flex items-center gap-3 text-sm font-extrabold text-white glow-white-md"
               >
-                <RefreshCw className="w-4 h-4 text-white animate-spin" />
-                <span>Refreshing Target Website...</span>
+                <RefreshCw className="w-5 h-5 text-white animate-spin stroke-[2.5]" />
+                <span className="tracking-tight">Refreshing Target Website...</span>
               </motion.div>
             </motion.div>
           )}

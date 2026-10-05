@@ -1,0 +1,53 @@
+{
+  "targets": [
+    {
+      "id": "target-1",
+      "name": "Primary Web Service",
+      "url": "https://example.com",
+      "runnerStatus": "idle",
+      "intervalType": "random",
+      "fixedSeconds": 15,
+      "randomMinSeconds": 10,
+      "randomMaxSeconds": 45,
+      "refreshMode": "dual",
+      "useCacheBuster": true,
+      "maxCycles": 0,
+      "cycleCount": 0,
+      "nextRefreshTimestamp": null,
+      "lastRefreshAt": null,
+      "stats": {
+        "totalRefreshes": 0,
+        "successfulRefreshes": 0,
+        "failedRefreshes": 0,
+        "averageLatencyMs": 0,
+        "totalLatencyMs": 0
+      },
+      "lastPing": null
+    },
+    {
+      "id": "target-2",
+      "name": "API Keep-Alive Node",
+      "url": "https://httpbin.org/get",
+      "runnerStatus": "idle",
+      "intervalType": "random",
+      "fixedSeconds": 20,
+      "randomMinSeconds": 15,
+      "randomMaxSeconds": 40,
+      "refreshMode": "ping",
+      "useCacheBuster": true,
+      "maxCycles": 0,
+      "cycleCount": 0,
+      "nextRefreshTimestamp": null,
+      "lastRefreshAt": null,
+      "stats": {
+        "totalRefreshes": 0,
+        "successfulRefreshes": 0,
+        "failedRefreshes": 0,
+        "averageLatencyMs": 0,
+        "totalLatencyMs": 0
+      },
+      "lastPing": null
+    }
+  ],
+  "logs": []
+}

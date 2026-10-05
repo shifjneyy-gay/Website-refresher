@@ -23,6 +23,7 @@ import { motion } from 'motion/react';
 interface RefresherCardProps {
   target: RefresherTarget;
   isSelectedForPreview: boolean;
+  isRefreshing?: boolean;
   onSelectForPreview: () => void;
   onStart: () => void;
   onPause: () => void;
@@ -36,6 +37,7 @@ interface RefresherCardProps {
 export const RefresherCard: React.FC<RefresherCardProps> = ({
   target,
   isSelectedForPreview,
+  isRefreshing = false,
   onSelectForPreview,
   onStart,
   onPause,
@@ -65,7 +67,9 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
       whileHover={{ y: -2 }}
       transition={{ duration: 0.2 }}
       className={`rounded-2xl border transition-all relative overflow-hidden bg-[#181a22] ${
-        isSelectedForPreview
+        isRefreshing
+          ? 'border-white shadow-[0_0_24px_rgba(255,255,255,0.25)] ring-1 ring-white/50'
+          : isSelectedForPreview
           ? 'border-white/50 shadow-[0_0_20px_rgba(255,255,255,0.12)]'
           : 'border-white/10 hover:border-white/25 shadow-lg shadow-black/30'
       }`}
@@ -76,12 +80,12 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="relative flex h-2 w-2 shrink-0">
-                {isRunning && (
+                {(isRunning || isRefreshing) && (
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-80" />
                 )}
                 <span
                   className={`relative inline-flex rounded-full h-2 w-2 ${
-                    isRunning
+                    isRefreshing || isRunning
                       ? 'bg-white shadow-[0_0_8px_#ffffff]'
                       : isPaused
                       ? 'bg-zinc-400'
@@ -94,14 +98,30 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
                 {target.name}
               </h3>
 
+              {isRefreshing ? (
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-white text-[#121316] font-bold flex items-center gap-1 shadow-[0_0_12px_#ffffff]">
+                  <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                  Refreshing target website...
+                </span>
+              ) : isRunning ? (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#20232c] text-white border border-white/20 font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                  Refreshing target website
+                </span>
+              ) : isPaused ? (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#181a22] text-zinc-400 border border-white/10">
+                  Paused
+                </span>
+              ) : null}
+
               {isRailway && (
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#13151b] border border-white/20 text-zinc-300">
                   Railway
                 </span>
               )}
 
-              {isSelectedForPreview && (
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-[#121316] font-semibold">
+              {isSelectedForPreview && !isRefreshing && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/20 font-medium">
                   Preview Active
                 </span>
               )}
@@ -164,6 +184,14 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
 
       {/* Body: Countdown Progress & Telemetry */}
       <div className="p-4 sm:p-5 pt-3.5 space-y-3.5">
+        {/* Prominent banner when actively refreshing target website */}
+        {isRefreshing && (
+          <div className="bg-white text-[#121316] text-xs font-bold py-2 px-3 rounded-xl flex items-center justify-center gap-2 glow-white-md animate-pulse">
+            <RefreshCw className="w-4 h-4 animate-spin stroke-[2.5]" />
+            <span>Refreshing target website...</span>
+          </div>
+        )}
+
         {/* Progress Bar & Countdown Number */}
         <div className="bg-[#12141a] p-3 rounded-xl border border-white/5 space-y-2">
           <div className="flex items-center justify-between text-xs">
@@ -177,11 +205,21 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
             </div>
 
             <div className="font-mono font-bold text-white text-sm">
-              {isRunning
-                ? `${Math.max(0, remainingSec).toFixed(1)}s`
-                : isPaused
-                ? 'Paused'
-                : 'Standby'}
+              {isRefreshing ? (
+                <span className="text-white text-xs font-bold flex items-center gap-1.5">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  Refreshing target website...
+                </span>
+              ) : isRunning ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-zinc-400 font-normal font-sans">Next:</span>
+                  <span>{Math.max(0, remainingSec).toFixed(1)}s</span>
+                </span>
+              ) : isPaused ? (
+                'Paused'
+              ) : (
+                'Standby'
+              )}
             </div>
           </div>
 
@@ -189,9 +227,13 @@ export const RefresherCard: React.FC<RefresherCardProps> = ({
           <div className="w-full bg-[#20232c] rounded-full h-1.5 overflow-hidden">
             <motion.div
               className={`h-full rounded-full transition-all ${
-                isRunning ? 'bg-white shadow-[0_0_8px_#ffffff]' : 'bg-zinc-600'
+                isRefreshing
+                  ? 'bg-white shadow-[0_0_12px_#ffffff] animate-pulse w-full'
+                  : isRunning
+                  ? 'bg-white shadow-[0_0_8px_#ffffff]'
+                  : 'bg-zinc-600'
               }`}
-              style={{ width: `${isRunning ? progressPercent : 0}%` }}
+              style={{ width: isRefreshing ? '100%' : `${isRunning ? progressPercent : 0}%` }}
             />
           </div>
 

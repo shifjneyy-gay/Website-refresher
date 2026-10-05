@@ -17,15 +17,11 @@ import {
   Plus,
   Play,
   Pause,
-  Square,
   RefreshCw,
   LayoutGrid,
   Eye,
   Terminal,
-  Shield,
   Layers,
-  Sparkles,
-  Server,
   RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -34,7 +30,7 @@ const LOCAL_STORAGE_TARGETS = 'auto_refresher_targets_v2';
 const LOCAL_STORAGE_SOUND = 'auto_refresher_sound_v2';
 
 export default function App() {
-  // Targets state: default with 2 initial sites to showcase multi-refresher capability immediately
+  // Targets state: default with 2 initial sites to showcase multi-refresher capability
   const [targets, setTargets] = useState<RefresherTarget[]>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_TARGETS);
@@ -61,8 +57,8 @@ export default function App() {
         refreshMode: 'dual',
         maxCycles: 0,
         cycleCount: 0,
-        remainingSeconds: 30,
-        totalIntervalSeconds: 30,
+        remainingSeconds: 15,
+        totalIntervalSeconds: 15,
         nextRefreshTimestamp: null,
         lastRefreshAt: null,
         stats: {
@@ -86,8 +82,8 @@ export default function App() {
         refreshMode: 'ping',
         maxCycles: 0,
         cycleCount: 0,
-        remainingSeconds: 25,
-        totalIntervalSeconds: 25,
+        remainingSeconds: 20,
+        totalIntervalSeconds: 20,
         nextRefreshTimestamp: null,
         lastRefreshAt: null,
         stats: {
@@ -110,6 +106,8 @@ export default function App() {
   const [logs, setLogs] = useState<RefreshLogEntry[]>([]);
   const [refreshKey, setRefreshKey] = useState<number>(1);
   const [isRefreshingFrame, setIsRefreshingFrame] = useState<boolean>(false);
+  const [refreshingTargetIds, setRefreshingTargetIds] = useState<string[]>([]);
+  const [refreshBannerText, setRefreshBannerText] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'split' | 'preview' | 'logs'>('split');
 
   // Modals state
@@ -117,11 +115,13 @@ export default function App() {
   const [targetToEdit, setTargetToEdit] = useState<RefresherTarget | null>(null);
   const [isRailwayModalOpen, setIsRailwayModalOpen] = useState<boolean>(false);
 
-  // References to prevent race conditions
+  // References to prevent stale closures
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
-  const isRefreshingFrameRef = useRef(isRefreshingFrame);
-  isRefreshingFrameRef.current = isRefreshingFrame;
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+  const selectedTargetIdRef = useRef(selectedTargetId);
+  selectedTargetIdRef.current = selectedTargetId;
 
   // Active target for LiveFrame preview
   const activePreviewTarget = targets.find((t) => t.id === selectedTargetId) || targets[0];
@@ -143,6 +143,30 @@ export default function App() {
     lastRefreshedAt: null,
   };
 
+  // Helper to trigger visual refresh state and sound chime with zero delay
+  const triggerRefreshEffect = useCallback((targetId: string, customMessage?: string) => {
+    setRefreshingTargetIds((prev) => Array.from(new Set([...prev, targetId])));
+    const targetObj = targetsRef.current.find((t) => t.id === targetId);
+    const label = targetObj ? targetObj.name : 'Target Website';
+    setRefreshBannerText(customMessage || `Refreshing Target Website: ${label}...`);
+
+    if (targetId === selectedTargetIdRef.current) {
+      setIsRefreshingFrame(true);
+      setRefreshKey((k) => k + 1);
+    }
+
+    if (soundEnabledRef.current) {
+      playRefreshChime();
+    }
+
+    // Keep active for 2.2s so user clearly sees the visual confirmation
+    setTimeout(() => {
+      setRefreshingTargetIds((prev) => prev.filter((id) => id !== targetId));
+      setIsRefreshingFrame(false);
+      setRefreshBannerText(null);
+    }, 2200);
+  }, []);
+
   // Sync state with server background runner
   const syncRunnerStatus = useCallback(async () => {
     try {
@@ -154,13 +178,19 @@ export default function App() {
         setTargets((prevTargets) => {
           return data.targets.map((serverTarget: any) => {
             const local = prevTargets.find((t) => t.id === serverTarget.id);
+            // If local was optimistically started as 'running', don't revert if server is catching up
+            const runnerStatus = (local?.runnerStatus === 'running' && serverTarget.runnerStatus !== 'stopped')
+              ? 'running'
+              : serverTarget.runnerStatus;
+
             return {
               ...serverTarget,
+              runnerStatus,
               name: serverTarget.name || local?.name || 'Site Refresher',
-              remainingSeconds: serverTarget.remainingSeconds !== undefined
-                ? serverTarget.remainingSeconds
-                : local?.remainingSeconds || 30,
-              totalIntervalSeconds: local?.totalIntervalSeconds || 30,
+              remainingSeconds: local?.runnerStatus === 'running' && local?.remainingSeconds !== undefined
+                ? local.remainingSeconds
+                : (serverTarget.remainingSeconds !== undefined ? serverTarget.remainingSeconds : (local?.remainingSeconds || 30)),
+              totalIntervalSeconds: local?.totalIntervalSeconds || serverTarget.fixedSeconds || 30,
             };
           });
         });
@@ -192,9 +222,12 @@ export default function App() {
   useEffect(() => {
     syncRunnerStatus();
 
+    // Heartbeat poll: only poll when tab is visible to conserve CPU and network
     const pollTimer = setInterval(() => {
-      syncRunnerStatus();
-    }, 2500);
+      if (document.visibilityState === 'visible') {
+        syncRunnerStatus();
+      }
+    }, 3000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
@@ -230,12 +263,48 @@ export default function App() {
     return () => clearInterval(timer);
   }, [anyRunning]);
 
-  // Client countdown ticker for smooth second-by-second updates
+  // Client countdown ticker: runs smoothly with zero delay, only when at least one target is running
   useEffect(() => {
+    if (!anyRunning) return;
+
     const ticker = setInterval(() => {
+      const now = Date.now();
+
+      // Check if any target's countdown has expired
+      targetsRef.current.forEach((t) => {
+        if (t.runnerStatus === 'running' && t.nextRefreshTimestamp && t.nextRefreshTimestamp <= now) {
+          // Immediately show "Refreshing Target Website..." with 0 delay
+          triggerRefreshEffect(t.id, `Refreshing Target Website: ${t.name}...`);
+
+          const min = Math.min(t.randomMinSeconds, t.randomMaxSeconds);
+          const max = Math.max(t.randomMinSeconds, t.randomMaxSeconds);
+          const nextInterval = t.intervalType === 'random'
+            ? Math.floor(Math.random() * (max - min + 1)) + min
+            : t.fixedSeconds || 15;
+
+          setTargets((prev) =>
+            prev.map((item) =>
+              item.id === t.id
+                ? {
+                    ...item,
+                    totalIntervalSeconds: nextInterval,
+                    remainingSeconds: nextInterval,
+                    nextRefreshTimestamp: now + nextInterval * 1000,
+                  }
+                : item
+            )
+          );
+
+          // Ping server immediately
+          fetch(`/api/runner/targets/${t.id}/refresh-now`, { method: 'POST' })
+            .then(() => setTimeout(syncRunnerStatus, 500))
+            .catch(() => {});
+        }
+      });
+
+      // Update remaining seconds countdown smoothly
       setTargets((prevTargets) => {
         let changed = false;
-        const now = Date.now();
         const updated = prevTargets.map((t) => {
           if (t.runnerStatus !== 'running' || !t.nextRefreshTimestamp) {
             return t;
@@ -250,10 +319,10 @@ export default function App() {
         });
         return changed ? updated : prevTargets;
       });
-    }, 200);
+    }, 250);
 
     return () => clearInterval(ticker);
-  }, []);
+  }, [anyRunning, triggerRefreshEffect, syncRunnerStatus]);
 
   // Handle Add or Edit Target
   const handleSaveTarget = async (data: {
@@ -304,6 +373,9 @@ export default function App() {
               },
             ]);
             setSelectedTargetId(resData.target.id);
+            if (data.autoStart) {
+              triggerRefreshEffect(resData.target.id);
+            }
             return;
           }
         }
@@ -328,7 +400,7 @@ export default function App() {
         cycleCount: 0,
         remainingSeconds: data.fixedSeconds,
         totalIntervalSeconds: data.fixedSeconds,
-        nextRefreshTimestamp: data.autoStart ? Date.now() + 2000 : null,
+        nextRefreshTimestamp: data.autoStart ? Date.now() + data.fixedSeconds * 1000 : null,
         lastRefreshAt: null,
         stats: {
           totalRefreshes: 0,
@@ -340,6 +412,9 @@ export default function App() {
       };
       setTargets((prev) => [...prev, newTarget]);
       setSelectedTargetId(newId);
+      if (data.autoStart) {
+        triggerRefreshEffect(newId);
+      }
     }
   };
 
@@ -363,23 +438,41 @@ export default function App() {
 
   // Target Single Actions: Start, Pause, Stop, Refresh Now
   const handleStartTarget = async (id: string) => {
-    try {
-      await fetch(`/api/runner/targets/${id}/start`, { method: 'POST' });
-    } catch (err) {
-      console.error('Failed to start target on server:', err);
-    }
+    const target = targets.find((t) => t.id === id);
+    if (!target) return;
 
+    // 1. Immediately show "Refreshing Target Website..." with 0 delay!
+    triggerRefreshEffect(id, `Refreshing Target Website: ${target.name}...`);
+
+    // 2. Compute next interval
+    const min = Math.min(target.randomMinSeconds, target.randomMaxSeconds);
+    const max = Math.max(target.randomMinSeconds, target.randomMaxSeconds);
+    const nextInterval = target.intervalType === 'random'
+      ? Math.floor(Math.random() * (max - min + 1)) + min
+      : target.fixedSeconds || 15;
+
+    // 3. Immediately set state to running with new interval
     setTargets((prev) =>
       prev.map((t) =>
         t.id === id
           ? {
               ...t,
               runnerStatus: 'running',
-              nextRefreshTimestamp: Date.now() + 2000,
+              totalIntervalSeconds: nextInterval,
+              remainingSeconds: nextInterval,
+              nextRefreshTimestamp: Date.now() + nextInterval * 1000,
             }
           : t
       )
     );
+
+    // 4. Notify backend server
+    try {
+      await fetch(`/api/runner/targets/${id}/start`, { method: 'POST' });
+      setTimeout(syncRunnerStatus, 400);
+    } catch (err) {
+      console.error('Failed to start target on server:', err);
+    }
   };
 
   const handlePauseTarget = async (id: string) => {
@@ -426,40 +519,61 @@ export default function App() {
     const target = targets.find((t) => t.id === id);
     if (!target) return;
 
-    if (soundEnabled) {
-      playRefreshChime();
-    }
-
-    if (id === selectedTargetId) {
-      setIsRefreshingFrame(true);
-      setRefreshKey((k) => k + 1);
-      setTimeout(() => setIsRefreshingFrame(false), 500);
-    }
+    // Immediately show "Refreshing Target Website..." and increment frame
+    triggerRefreshEffect(id, `Refreshing Target Website: ${target.name}...`);
 
     try {
       await fetch(`/api/runner/targets/${id}/refresh-now`, { method: 'POST' });
-      // Trigger instant poll to update ping status
-      setTimeout(syncRunnerStatus, 300);
+      setTimeout(syncRunnerStatus, 400);
     } catch (err) {
       console.error('Instant refresh failed:', err);
     }
   };
 
-  // Master Global Actions
+  // Master Global Actions: Start All, Pause All, Stop All
   const handleStartAll = async () => {
+    // 1. Immediately show "Refreshing Target Website..." for all
+    const allIds = targets.map((t) => t.id);
+    setRefreshingTargetIds(allIds);
+    setRefreshBannerText('Refreshing Target Website for all configured targets...');
+    setIsRefreshingFrame(true);
+    setRefreshKey((k) => k + 1);
+
+    if (soundEnabled) {
+      playRefreshChime();
+    }
+
+    setTimeout(() => {
+      setRefreshingTargetIds([]);
+      setIsRefreshingFrame(false);
+      setRefreshBannerText(null);
+    }, 2400);
+
+    // 2. Set all targets running
+    setTargets((prev) =>
+      prev.map((t) => {
+        const min = Math.min(t.randomMinSeconds, t.randomMaxSeconds);
+        const max = Math.max(t.randomMinSeconds, t.randomMaxSeconds);
+        const nextInterval = t.intervalType === 'random'
+          ? Math.floor(Math.random() * (max - min + 1)) + min
+          : t.fixedSeconds || 15;
+        return {
+          ...t,
+          runnerStatus: 'running',
+          totalIntervalSeconds: nextInterval,
+          remainingSeconds: nextInterval,
+          nextRefreshTimestamp: Date.now() + nextInterval * 1000,
+        };
+      })
+    );
+
+    // 3. Notify backend server
     try {
       await fetch('/api/runner/start-all', { method: 'POST' });
+      setTimeout(syncRunnerStatus, 400);
     } catch (err) {
       console.error('Start all failed:', err);
     }
-
-    setTargets((prev) =>
-      prev.map((t) => ({
-        ...t,
-        runnerStatus: 'running',
-        nextRefreshTimestamp: Date.now() + 2000,
-      }))
-    );
   };
 
   const handlePauseAll = async () => {
@@ -563,6 +677,23 @@ export default function App() {
       {/* Square box background grid */}
       <div className="fixed inset-0 bg-grid-squares pointer-events-none z-0 opacity-60" />
 
+      {/* Prominent floating toast banner when refreshing */}
+      <AnimatePresence>
+        {refreshBannerText && (
+          <motion.div
+            initial={{ opacity: 0, y: -24, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -24, scale: 0.95 }}
+            className="fixed top-20 sm:top-24 left-1/2 -translate-x-1/2 z-50 bg-[#15171f] border-2 border-white text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-bold text-xs sm:text-sm glow-white-md tracking-tight"
+          >
+            <span className="w-6 h-6 rounded-full bg-white text-[#121316] flex items-center justify-center shrink-0">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin stroke-[2.5]" />
+            </span>
+            <span className="font-mono">{refreshBannerText}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Top Navbar */}
       <div className="relative z-30">
         <Navbar
@@ -614,7 +745,7 @@ export default function App() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={handleResetStats}
-              className="p-2.5 rounded-xl text-xs bg-zinc-900 text-zinc-400 hover:text-white border border-white/10 hover:border-white/30 transition-all"
+              className="p-2.5 rounded-xl text-xs bg-[#20232c] text-zinc-400 hover:text-white border border-white/10 hover:border-white/30 transition-all"
               title="Reset session counters"
             >
               <RotateCcw className="w-4 h-4" />
@@ -672,6 +803,7 @@ export default function App() {
                   key={target.id}
                   target={target}
                   isSelectedForPreview={target.id === selectedTargetId}
+                  isRefreshing={refreshingTargetIds.includes(target.id)}
                   onSelectForPreview={() => setSelectedTargetId(target.id)}
                   onStart={() => handleStartTarget(target.id)}
                   onPause={() => handlePauseTarget(target.id)}
@@ -691,12 +823,12 @@ export default function App() {
 
         {/* View Layout Tabs & Keyboard Hints */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-          <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-white/10 shadow-sm text-xs font-semibold">
+          <div className="flex items-center bg-[#181a22] p-1 rounded-xl border border-white/10 shadow-sm text-xs font-semibold">
             <button
               type="button"
               onClick={() => setActiveView('split')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'split' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
+                activeView === 'split' ? 'bg-white text-[#121316] font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
@@ -706,7 +838,7 @@ export default function App() {
               type="button"
               onClick={() => setActiveView('preview')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'preview' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
+                activeView === 'preview' ? 'bg-white text-[#121316] font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
               <Eye className="w-3.5 h-3.5" />
@@ -716,7 +848,7 @@ export default function App() {
               type="button"
               onClick={() => setActiveView('logs')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'logs' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
+                activeView === 'logs' ? 'bg-white text-[#121316] font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
               <Terminal className="w-3.5 h-3.5" />
@@ -727,14 +859,14 @@ export default function App() {
           {/* Keyboard hints */}
           <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-400 font-mono">
             <span className="inline-flex items-center gap-1.5">
-              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-900 border border-white/20 text-white font-mono text-[10px]">
+              <kbd className="px-1.5 py-0.5 rounded-md bg-[#20232c] border border-white/20 text-white font-mono text-[10px]">
                 Space
               </kbd>
               <span>Toggle All</span>
             </span>
             <span className="text-zinc-700">•</span>
             <span className="inline-flex items-center gap-1.5">
-              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-900 border border-white/20 text-white font-mono text-[10px]">
+              <kbd className="px-1.5 py-0.5 rounded-md bg-[#20232c] border border-white/20 text-white font-mono text-[10px]">
                 R
               </kbd>
               <span>Refresh Active</span>
@@ -750,7 +882,7 @@ export default function App() {
                 url={activePreviewTarget?.url || ''}
                 name={activePreviewTarget?.name}
                 refreshKey={refreshKey}
-                isLoading={isRefreshingFrame}
+                isLoading={isRefreshingFrame || refreshingTargetIds.includes(selectedTargetId)}
                 onManualRefresh={() => {
                   if (activePreviewTarget) {
                     handleInstantRefreshTarget(activePreviewTarget.id);

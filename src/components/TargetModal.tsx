@@ -71,6 +71,34 @@ export const TargetModal: React.FC<TargetModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleMinSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Number(e.target.value);
+    // Never move the other bar: clamp val strictly to at most randomMaxSeconds - 1
+    const safeMax = Math.max(5, randomMaxSeconds - 1);
+    setRandomMinSeconds(Math.min(val, safeMax));
+  };
+
+  const handleMaxSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Number(e.target.value);
+    // Never move the other bar: clamp val strictly to at least randomMinSeconds + 1
+    const safeMin = Math.min(120, randomMinSeconds + 1);
+    setRandomMaxSeconds(Math.max(val, safeMin));
+  };
+
+  const stepMin = (delta: number) => {
+    setRandomMinSeconds((prev) => {
+      const next = prev + delta;
+      return Math.max(5, Math.min(next, randomMaxSeconds - 1));
+    });
+  };
+
+  const stepMax = (delta: number) => {
+    setRandomMaxSeconds((prev) => {
+      const next = prev + delta;
+      return Math.min(120, Math.max(next, randomMinSeconds + 1));
+    });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     let cleanUrl = url.trim();
@@ -218,27 +246,128 @@ export const TargetModal: React.FC<TargetModalProps> = ({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <span className="text-[11px] text-zinc-400 block mb-1 font-mono">Min Seconds: {randomMinSeconds}s</span>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] text-zinc-400 font-mono">Min Delay:</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => stepMin(-1)}
+                          className="w-5 h-5 flex items-center justify-center rounded bg-[#20232c] text-zinc-300 hover:text-white border border-white/10 text-xs font-mono"
+                          title="Decrease 1s"
+                        >
+                          -
+                        </button>
+                        <span className="text-[11px] text-white font-mono font-bold bg-[#20232c] px-2 py-0.5 rounded border border-white/10 min-w-8 text-center">
+                          {randomMinSeconds}s
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => stepMin(1)}
+                          className="w-5 h-5 flex items-center justify-center rounded bg-[#20232c] text-zinc-300 hover:text-white border border-white/10 text-xs font-mono"
+                          title="Increase 1s"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
                     <input
                       type="range"
-                      min="5"
+                      min={5}
                       max={Math.max(5, randomMaxSeconds - 1)}
-                      value={randomMinSeconds}
-                      onChange={(e) => setRandomMinSeconds(Number(e.target.value))}
-                      className="w-full accent-white h-1 bg-zinc-800 rounded-lg cursor-pointer"
+                      value={Math.min(randomMinSeconds, Math.max(5, randomMaxSeconds - 1))}
+                      onChange={handleMinSliderChange}
+                      className="w-full accent-white h-1.5 bg-[#20232c] rounded-lg cursor-pointer"
                     />
+                    <div className="flex justify-between text-[10px] text-zinc-500 font-mono mt-1">
+                      <span>5s</span>
+                      <span>{randomMaxSeconds - 1}s max</span>
+                    </div>
                   </div>
                   <div>
-                    <span className="text-[11px] text-zinc-400 block mb-1 font-mono">Max Seconds: {randomMaxSeconds}s</span>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] text-zinc-400 font-mono">Max Delay:</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => stepMax(-1)}
+                          className="w-5 h-5 flex items-center justify-center rounded bg-[#20232c] text-zinc-300 hover:text-white border border-white/10 text-xs font-mono"
+                          title="Decrease 1s"
+                        >
+                          -
+                        </button>
+                        <span className="text-[11px] text-white font-mono font-bold bg-[#20232c] px-2 py-0.5 rounded border border-white/10 min-w-8 text-center">
+                          {randomMaxSeconds}s
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => stepMax(1)}
+                          className="w-5 h-5 flex items-center justify-center rounded bg-[#20232c] text-zinc-300 hover:text-white border border-white/10 text-xs font-mono"
+                          title="Increase 1s"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
                     <input
                       type="range"
-                      min={randomMinSeconds + 1}
-                      max="120"
-                      value={randomMaxSeconds}
-                      onChange={(e) => setRandomMaxSeconds(Number(e.target.value))}
-                      className="w-full accent-white h-1 bg-zinc-800 rounded-lg cursor-pointer"
+                      min={Math.min(120, randomMinSeconds + 1)}
+                      max={120}
+                      value={Math.max(randomMaxSeconds, Math.min(120, randomMinSeconds + 1))}
+                      onChange={handleMaxSliderChange}
+                      className="w-full accent-white h-1.5 bg-[#20232c] rounded-lg cursor-pointer"
                     />
+                    <div className="flex justify-between text-[10px] text-zinc-500 font-mono mt-1">
+                      <span>{randomMinSeconds + 1}s min</span>
+                      <span>120s</span>
+                    </div>
                   </div>
+                </div>
+
+                {/* Quick Presets without jitter */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+                  <span className="text-zinc-500 text-[11px] font-mono">Presets:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRandomMinSeconds(10);
+                      setRandomMaxSeconds(45);
+                    }}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
+                      randomMinSeconds === 10 && randomMaxSeconds === 45
+                        ? 'bg-white text-[#121316] font-bold border-white'
+                        : 'bg-[#20232c] text-zinc-300 hover:text-white border-white/10'
+                    }`}
+                  >
+                    10s–45s (Default)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRandomMinSeconds(15);
+                      setRandomMaxSeconds(30);
+                    }}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
+                      randomMinSeconds === 15 && randomMaxSeconds === 30
+                        ? 'bg-white text-[#121316] font-bold border-white'
+                        : 'bg-[#20232c] text-zinc-300 hover:text-white border-white/10'
+                    }`}
+                  >
+                    15s–30s
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRandomMinSeconds(30);
+                      setRandomMaxSeconds(60);
+                    }}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
+                      randomMinSeconds === 30 && randomMaxSeconds === 60
+                        ? 'bg-white text-[#121316] font-bold border-white'
+                        : 'bg-[#20232c] text-zinc-300 hover:text-white border-white/10'
+                    }`}
+                  >
+                    30s–60s
+                  </button>
                 </div>
               </div>
             ) : (

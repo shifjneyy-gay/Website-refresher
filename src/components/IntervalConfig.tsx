@@ -139,13 +139,16 @@ export const IntervalConfig: React.FC<IntervalConfigProps> = ({
                   type="range"
                   min="5"
                   max={Math.max(5, config.randomMaxSeconds - 1)}
-                  value={config.randomMinSeconds}
-                  onChange={(e) => onChangeConfig({ randomMinSeconds: Number(e.target.value) })}
+                  value={Math.min(config.randomMinSeconds, Math.max(5, config.randomMaxSeconds - 1))}
+                  onChange={(e) => {
+                    const newMin = Number(e.target.value);
+                    onChangeConfig({ randomMinSeconds: Math.min(newMin, Math.max(5, config.randomMaxSeconds - 1)) });
+                  }}
                   className="w-full accent-indigo-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
                   <span>5s</span>
-                  <span>{config.randomMaxSeconds - 1}s</span>
+                  <span>{config.randomMaxSeconds - 1}s max</span>
                 </div>
               </div>
 
@@ -158,14 +161,17 @@ export const IntervalConfig: React.FC<IntervalConfigProps> = ({
                 <input
                   id="range-max-seconds"
                   type="range"
-                  min={config.randomMinSeconds + 1}
+                  min={Math.min(120, config.randomMinSeconds + 1)}
                   max="120"
-                  value={config.randomMaxSeconds}
-                  onChange={(e) => onChangeConfig({ randomMaxSeconds: Number(e.target.value) })}
+                  value={Math.max(config.randomMaxSeconds, Math.min(120, config.randomMinSeconds + 1))}
+                  onChange={(e) => {
+                    const newMax = Number(e.target.value);
+                    onChangeConfig({ randomMaxSeconds: Math.max(newMax, Math.min(120, config.randomMinSeconds + 1)) });
+                  }}
                   className="w-full accent-violet-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
-                  <span>{config.randomMinSeconds + 1}s</span>
+                  <span>{config.randomMinSeconds + 1}s min</span>
                   <span>120s</span>
                 </div>
               </div>

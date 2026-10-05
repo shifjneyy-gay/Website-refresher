@@ -1,5 +1,19 @@
+# Optimized Nixpacks configuration for Railway
 [variables]
 NIXPACKS_NODE_VERSION = "22"
+NODE_ENV = "production"
+CI = "true"
 
 [phases.setup]
 nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm ci --prefer-offline --no-audit --no-fund"]
+cacheDirectories = ["/root/.npm"]
+
+[phases.build]
+cmds = ["npm run build"]
+cacheDirectories = ["node_modules/.vite"]
+
+[start]
+cmd = "node dist/server.cjs"
