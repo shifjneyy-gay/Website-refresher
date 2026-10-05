@@ -4,6 +4,32 @@ export type IntervalType = 'fixed' | 'random';
 
 export type RunnerStatus = 'idle' | 'running' | 'paused' | 'stopped';
 
+export interface RefresherTarget {
+  id: string;
+  name: string;
+  url: string;
+  runnerStatus: RunnerStatus;
+  intervalType: IntervalType;
+  fixedSeconds: number; // e.g. 15
+  randomMinSeconds: number; // e.g. 10
+  randomMaxSeconds: number; // e.g. 45
+  useCacheBuster: boolean;
+  refreshMode: RefreshMode;
+  maxCycles: number; // 0 = continuous
+  cycleCount: number;
+  remainingSeconds: number;
+  totalIntervalSeconds: number;
+  nextRefreshTimestamp: number | null;
+  lastRefreshAt: string | null;
+  stats: {
+    totalRefreshes: number;
+    successfulRefreshes: number;
+    failedRefreshes: number;
+    averageLatencyMs: number;
+  };
+  lastPing: PingResult | null;
+}
+
 export interface RefreshConfig {
   url: string;
   intervalType: IntervalType;
@@ -33,6 +59,8 @@ export interface PingResult {
 
 export interface RefreshLogEntry {
   id: string;
+  targetId?: string;
+  targetName?: string;
   timestamp: Date;
   url: string;
   intervalUsed: number;

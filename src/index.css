@@ -1,1 +1,94 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-grid-color: rgba(255, 255, 255, 0.035);
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #121316;
+    color: #f1f2f4;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow-x: hidden;
+  }
+}
+
+/* Eye-pleasing subtle square grid background on soft dark gray */
+.bg-grid-squares {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+}
+
+.bg-grid-squares-dense {
+  background-size: 16px 16px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+}
+
+/* Glowing buttons & badges with soft, comfortable glow */
+.glow-white-sm {
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.14);
+}
+
+.glow-white-md {
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.22);
+}
+
+.btn-glow-white {
+  background-color: #ffffff;
+  color: #121316;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.18);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-glow-white:hover {
+  background-color: #f4f4f6;
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-glow-white:active {
+  transform: translateY(0px) scale(0.98);
+}
+
+.btn-glow-dark {
+  background-color: #1c1e25;
+  color: #f1f2f4;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.04);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-glow-dark:hover {
+  background-color: #242730;
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+/* Pleasing silver/white gradient head text */
+.text-gradient-white {
+  background: linear-gradient(180deg, #ffffff 0%, #e2e4e9 60%, #9ca3af 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Custom sleek scrollbar for dark grayish theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #121316;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b2e38;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d414f;
+}

@@ -5,510 +5,525 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
-import { UrlInputBar } from './components/UrlInputBar';
-import { IntervalConfig } from './components/IntervalConfig';
-import { ControlBar } from './components/ControlBar';
+import { RefresherCard } from './components/RefresherCard';
+import { TargetModal } from './components/TargetModal';
 import { MetricsCards } from './components/MetricsCards';
 import { LiveFrame } from './components/LiveFrame';
 import { ActivityLog } from './components/ActivityLog';
 import { RailwayDeployModal } from './components/RailwayDeployModal';
-import { RefreshConfig, RefreshLogEntry, SessionStats, PingResult, RunnerStatus } from './types';
+import { RefresherTarget, RefreshLogEntry, SessionStats, RunnerStatus } from './types';
 import { playRefreshChime } from './utils/audio';
-import { LayoutGrid, Eye, Terminal, Play, Square, Pause, RotateCcw, Cloud, CheckCircle2 } from 'lucide-react';
+import {
+  Plus,
+  Play,
+  Pause,
+  Square,
+  RefreshCw,
+  LayoutGrid,
+  Eye,
+  Terminal,
+  Shield,
+  Layers,
+  Sparkles,
+  Server,
+  RotateCcw,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-const LOCAL_STORAGE_RECENT_URLS = 'auto_refresher_recent_urls';
-const LOCAL_STORAGE_SAVED_CONFIG = 'auto_refresher_config';
+const LOCAL_STORAGE_TARGETS = 'auto_refresher_targets_v2';
+const LOCAL_STORAGE_SOUND = 'auto_refresher_sound_v2';
 
 export default function App() {
-  // Config state
-  const [config, setConfig] = useState<RefreshConfig>(() => {
+  // Targets state: default with 2 initial sites to showcase multi-refresher capability immediately
+  const [targets, setTargets] = useState<RefresherTarget[]>(() => {
     try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_SAVED_CONFIG);
+      const saved = localStorage.getItem(LOCAL_STORAGE_TARGETS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
-          ...parsed,
-          maxCycles: parsed.maxCycles ?? 0,
-        };
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
       }
-    } catch {
-      // Ignore parse error
-    }
-    return {
-      url: 'https://example.com',
-      intervalType: 'random', // Default to 10-45s random range as requested
-      fixedSeconds: 15,
-      randomMinSeconds: 10,
-      randomMaxSeconds: 45,
-      useCacheBuster: true,
-      soundNotification: false,
-      refreshMode: 'dual',
-      autoStartOnUrlChange: false,
-      maxCycles: 0, // 0 = continuous
-    };
-  });
-
-  // Runner state: 'idle' | 'running' | 'paused' | 'stopped'
-  const [runnerStatus, setRunnerStatus] = useState<RunnerStatus>('idle');
-  const [cycleCount, setCycleCount] = useState<number>(0);
-
-  const [currentIntervalDuration, setCurrentIntervalDuration] = useState<number>(30);
-  const [remainingSeconds, setRemainingSeconds] = useState<number>(30);
-  const [refreshKey, setRefreshKey] = useState<number>(1);
-  const [isRefreshingNow, setIsRefreshingNow] = useState<boolean>(false);
-  const [uptimeSeconds, setUptimeSeconds] = useState<number>(0);
-  const [activeView, setActiveView] = useState<'split' | 'preview' | 'logs'>('split');
-  const [isRailwayModalOpen, setIsRailwayModalOpen] = useState<boolean>(false);
-
-  // Robust refs to prevent glitching, multiple trigger races, and state tearing
-  const nextRefreshTimestampRef = useRef<number>(0);
-  const isRefreshingRef = useRef<boolean>(false);
-  const pausedRemainingSecondsRef = useRef<number>(0);
-  const configRef = useRef(config);
-  configRef.current = config;
-  const currentIntervalDurationRef = useRef<number>(currentIntervalDuration);
-  currentIntervalDurationRef.current = currentIntervalDuration;
-
-  const [recentUrls, setRecentUrls] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_RECENT_URLS);
-      if (saved) return JSON.parse(saved);
     } catch {
       // Ignore
     }
-    return ['https://example.com', 'https://httpbin.org/get', 'https://1.1.1.1/cdn-cgi/trace'];
+    return [
+      {
+        id: 'target-1',
+        name: 'Primary Web Service',
+        url: 'https://example.com',
+        runnerStatus: 'idle',
+        intervalType: 'random',
+        fixedSeconds: 15,
+        randomMinSeconds: 10,
+        randomMaxSeconds: 45,
+        useCacheBuster: true,
+        refreshMode: 'dual',
+        maxCycles: 0,
+        cycleCount: 0,
+        remainingSeconds: 30,
+        totalIntervalSeconds: 30,
+        nextRefreshTimestamp: null,
+        lastRefreshAt: null,
+        stats: {
+          totalRefreshes: 0,
+          successfulRefreshes: 0,
+          failedRefreshes: 0,
+          averageLatencyMs: 0,
+        },
+        lastPing: null,
+      },
+      {
+        id: 'target-2',
+        name: 'API Keep-Alive Node',
+        url: 'https://httpbin.org/get',
+        runnerStatus: 'idle',
+        intervalType: 'random',
+        fixedSeconds: 20,
+        randomMinSeconds: 15,
+        randomMaxSeconds: 40,
+        useCacheBuster: true,
+        refreshMode: 'ping',
+        maxCycles: 0,
+        cycleCount: 0,
+        remainingSeconds: 25,
+        totalIntervalSeconds: 25,
+        nextRefreshTimestamp: null,
+        lastRefreshAt: null,
+        stats: {
+          totalRefreshes: 0,
+          successfulRefreshes: 0,
+          failedRefreshes: 0,
+          averageLatencyMs: 0,
+        },
+        lastPing: null,
+      },
+    ];
   });
 
-  const [lastPing, setLastPing] = useState<PingResult | null>(null);
+  const [selectedTargetId, setSelectedTargetId] = useState<string>('target-1');
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    return localStorage.getItem(LOCAL_STORAGE_SOUND) === 'true';
+  });
+
+  const [uptimeSeconds, setUptimeSeconds] = useState<number>(0);
   const [logs, setLogs] = useState<RefreshLogEntry[]>([]);
-  const [stats, setStats] = useState<SessionStats>({
-    totalRefreshes: 0,
-    successfulRefreshes: 0,
-    failedRefreshes: 0,
-    averageLatencyMs: 0,
+  const [refreshKey, setRefreshKey] = useState<number>(1);
+  const [isRefreshingFrame, setIsRefreshingFrame] = useState<boolean>(false);
+  const [activeView, setActiveView] = useState<'split' | 'preview' | 'logs'>('split');
+
+  // Modals state
+  const [isTargetModalOpen, setIsTargetModalOpen] = useState<boolean>(false);
+  const [targetToEdit, setTargetToEdit] = useState<RefresherTarget | null>(null);
+  const [isRailwayModalOpen, setIsRailwayModalOpen] = useState<boolean>(false);
+
+  // References to prevent race conditions
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const isRefreshingFrameRef = useRef(isRefreshingFrame);
+  isRefreshingFrameRef.current = isRefreshingFrame;
+
+  // Active target for LiveFrame preview
+  const activePreviewTarget = targets.find((t) => t.id === selectedTargetId) || targets[0];
+
+  // Global runner status
+  const anyRunning = targets.some((t) => t.runnerStatus === 'running');
+  const allPaused = targets.length > 0 && targets.every((t) => t.runnerStatus === 'paused');
+  const globalRunnerStatus: RunnerStatus = anyRunning ? 'running' : allPaused ? 'paused' : 'idle';
+
+  // Overall aggregate stats
+  const aggregateStats: SessionStats = {
+    totalRefreshes: targets.reduce((sum, t) => sum + t.stats.totalRefreshes, 0),
+    successfulRefreshes: targets.reduce((sum, t) => sum + t.stats.successfulRefreshes, 0),
+    failedRefreshes: targets.reduce((sum, t) => sum + t.stats.failedRefreshes, 0),
+    averageLatencyMs: targets.length > 0
+      ? Math.round(targets.reduce((sum, t) => sum + t.stats.averageLatencyMs, 0) / targets.length)
+      : 0,
     startedAt: null,
     lastRefreshedAt: null,
-  });
+  };
 
-  const isRunning = runnerStatus === 'running';
-  const runnerStatusRef = useRef<RunnerStatus>(runnerStatus);
-  runnerStatusRef.current = runnerStatus;
-
-  // Calculate next cycle duration based on current config
-  const calculateNextInterval = useCallback((): number => {
-    const currentCfg = configRef.current;
-    if (currentCfg.intervalType === 'random') {
-      const min = Math.max(1, Math.min(currentCfg.randomMinSeconds, currentCfg.randomMaxSeconds));
-      const max = Math.max(min, Math.max(currentCfg.randomMinSeconds, currentCfg.randomMaxSeconds));
-      return Math.floor(Math.random() * (max - min + 1)) + min;
-    }
-    return Math.max(1, currentCfg.fixedSeconds);
-  }, []);
-
-  // Sync state from server 24/7 background runner
+  // Sync state with server background runner
   const syncRunnerStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/runner/status');
       if (!res.ok) return;
       const data = await res.json();
 
-      if (data.runnerStatus === 'running' || data.runnerStatus === 'paused') {
-        setRunnerStatus(data.runnerStatus);
-        if (data.targetUrl && data.targetUrl !== configRef.current.url) {
-          setConfig((prev) => ({ ...prev, url: data.targetUrl }));
-        }
-        if (typeof data.uptimeSeconds === 'number') {
-          setUptimeSeconds(data.uptimeSeconds);
-        }
-        if (data.nextRefreshTimestamp) {
-          nextRefreshTimestampRef.current = data.nextRefreshTimestamp;
-          const remaining = Math.max(0, (data.nextRefreshTimestamp - Date.now()) / 1000);
-          setRemainingSeconds(parseFloat(remaining.toFixed(1)));
-        }
-        if (data.stats) {
-          setStats((prev) => {
-            // If new refreshes completed while user was away, reload iframe preview
-            if (data.stats.totalRefreshes > prev.totalRefreshes) {
-              setRefreshKey((k) => k + 1);
-            }
+      if (Array.isArray(data.targets) && data.targets.length > 0) {
+        setTargets((prevTargets) => {
+          return data.targets.map((serverTarget: any) => {
+            const local = prevTargets.find((t) => t.id === serverTarget.id);
             return {
-              totalRefreshes: data.stats.totalRefreshes,
-              successfulRefreshes: data.stats.successfulRefreshes,
-              failedRefreshes: data.stats.failedRefreshes,
-              averageLatencyMs: data.stats.averageLatencyMs,
-              startedAt: data.startedAt ? new Date(data.startedAt) : prev.startedAt,
-              lastRefreshedAt: data.lastPing?.timestamp ? new Date(data.lastPing.timestamp) : prev.lastRefreshedAt,
+              ...serverTarget,
+              name: serverTarget.name || local?.name || 'Site Refresher',
+              remainingSeconds: serverTarget.remainingSeconds !== undefined
+                ? serverTarget.remainingSeconds
+                : local?.remainingSeconds || 30,
+              totalIntervalSeconds: local?.totalIntervalSeconds || 30,
             };
           });
-          setCycleCount(data.stats.totalRefreshes);
-        }
-        if (data.lastPing) {
-          setLastPing(data.lastPing);
-        }
-        if (Array.isArray(data.logs) && data.logs.length > 0) {
-          setLogs(
-            data.logs.map((item: any) => ({
-              id: item.id,
-              timestamp: new Date(item.timestamp),
-              url: item.url,
-              intervalUsed: item.intervalUsed,
-              status: item.status,
-              statusCode: item.statusCode,
-              latencyMs: item.latencyMs,
-              message: item.message,
-              cacheBusterApplied: item.cacheBusterApplied,
-            }))
-          );
-        }
-      } else if (data.runnerStatus === 'idle' && runnerStatusRef.current === 'running') {
-        setRunnerStatus('stopped');
+        });
       }
-    } catch (err) {
-      console.error('Failed to sync runner status with server:', err);
+
+      if (Array.isArray(data.logs)) {
+        setLogs(
+          data.logs.map((item: any) => ({
+            id: item.id,
+            targetId: item.targetId,
+            targetName: item.targetName,
+            timestamp: new Date(item.timestamp),
+            url: item.url,
+            intervalUsed: item.intervalUsed,
+            status: item.status,
+            statusCode: item.statusCode,
+            latencyMs: item.latencyMs,
+            message: item.message,
+            cacheBusterApplied: item.cacheBusterApplied,
+          }))
+        );
+      }
+    } catch {
+      // Ignore background poll errors silently
     }
   }, []);
 
-  // Initial mount: load active background runner state from server
+  // Initial sync & periodic heartbeat sync with 24/7 background runner
   useEffect(() => {
     syncRunnerStatus();
-  }, [syncRunnerStatus]);
 
-  // When user returns to tab (even after 10+ minutes or reopening browser), immediately re-sync
-  useEffect(() => {
-    const handleVisibilityChange = () => {
+    const pollTimer = setInterval(() => {
+      syncRunnerStatus();
+    }, 2500);
+
+    const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         syncRunnerStatus();
       }
     };
 
-    const handleFocus = () => {
-      syncRunnerStatus();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleFocus);
-
-    // Light background heartbeat poll every 2.5 seconds to sync stats & logs from server
-    const pollTimer = setInterval(() => {
-      syncRunnerStatus();
-    }, 2500);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
 
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleFocus);
       clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
     };
   }, [syncRunnerStatus]);
 
-  // Persist config changes
+  // Persist targets to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(LOCAL_STORAGE_SAVED_CONFIG, JSON.stringify(config));
+      localStorage.setItem(LOCAL_STORAGE_TARGETS, JSON.stringify(targets));
     } catch {
       // Ignore
     }
-  }, [config]);
+  }, [targets]);
 
-  // Execute single refresh event without race conditions
-  const triggerRefreshCycle = useCallback(async (manual = false) => {
-    const currentCfg = configRef.current;
-    if (!currentCfg.url) return;
-    if (isRefreshingRef.current && !manual) return;
+  // Uptime ticker
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = setInterval(() => {
+      setUptimeSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [anyRunning]);
 
-    isRefreshingRef.current = true;
-    setIsRefreshingNow(true);
+  // Client countdown ticker for smooth second-by-second updates
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      setTargets((prevTargets) => {
+        let changed = false;
+        const now = Date.now();
+        const updated = prevTargets.map((t) => {
+          if (t.runnerStatus !== 'running' || !t.nextRefreshTimestamp) {
+            return t;
+          }
+          const remMs = t.nextRefreshTimestamp - now;
+          const remSec = Math.max(0, parseFloat((remMs / 1000).toFixed(1)));
+          if (remSec !== t.remainingSeconds) {
+            changed = true;
+            return { ...t, remainingSeconds: remSec };
+          }
+          return t;
+        });
+        return changed ? updated : prevTargets;
+      });
+    }, 200);
 
-    if (currentCfg.soundNotification) {
+    return () => clearInterval(ticker);
+  }, []);
+
+  // Handle Add or Edit Target
+  const handleSaveTarget = async (data: {
+    id?: string;
+    name: string;
+    url: string;
+    intervalType: any;
+    fixedSeconds: number;
+    randomMinSeconds: number;
+    randomMaxSeconds: number;
+    refreshMode: any;
+    useCacheBuster: boolean;
+    maxCycles: number;
+    autoStart: boolean;
+  }) => {
+    if (data.id) {
+      // Update existing target
+      try {
+        await fetch(`/api/runner/targets/${data.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+      } catch (err) {
+        console.error('Failed to update target on server:', err);
+      }
+
+      setTargets((prev) =>
+        prev.map((t) => (t.id === data.id ? { ...t, ...data } : t))
+      );
+    } else {
+      // Create new target
+      try {
+        const res = await fetch('/api/runner/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        if (res.ok) {
+          const resData = await res.json();
+          if (resData.target) {
+            setTargets((prev) => [
+              ...prev,
+              {
+                ...resData.target,
+                remainingSeconds: resData.target.fixedSeconds || 30,
+                totalIntervalSeconds: resData.target.fixedSeconds || 30,
+              },
+            ]);
+            setSelectedTargetId(resData.target.id);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to create target on server:', err);
+      }
+
+      // Fallback local creation
+      const newId = `target-${Date.now()}`;
+      const newTarget: RefresherTarget = {
+        id: newId,
+        name: data.name,
+        url: data.url,
+        runnerStatus: data.autoStart ? 'running' : 'idle',
+        intervalType: data.intervalType,
+        fixedSeconds: data.fixedSeconds,
+        randomMinSeconds: data.randomMinSeconds,
+        randomMaxSeconds: data.randomMaxSeconds,
+        refreshMode: data.refreshMode,
+        useCacheBuster: data.useCacheBuster,
+        maxCycles: data.maxCycles,
+        cycleCount: 0,
+        remainingSeconds: data.fixedSeconds,
+        totalIntervalSeconds: data.fixedSeconds,
+        nextRefreshTimestamp: data.autoStart ? Date.now() + 2000 : null,
+        lastRefreshAt: null,
+        stats: {
+          totalRefreshes: 0,
+          successfulRefreshes: 0,
+          failedRefreshes: 0,
+          averageLatencyMs: 0,
+        },
+        lastPing: null,
+      };
+      setTargets((prev) => [...prev, newTarget]);
+      setSelectedTargetId(newId);
+    }
+  };
+
+  // Delete Target
+  const handleDeleteTarget = async (id: string) => {
+    if (targets.length <= 1) return;
+    try {
+      await fetch(`/api/runner/targets/${id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Failed to delete target on server:', err);
+    }
+
+    setTargets((prev) => {
+      const remaining = prev.filter((t) => t.id !== id);
+      if (selectedTargetId === id && remaining.length > 0) {
+        setSelectedTargetId(remaining[0].id);
+      }
+      return remaining;
+    });
+  };
+
+  // Target Single Actions: Start, Pause, Stop, Refresh Now
+  const handleStartTarget = async (id: string) => {
+    try {
+      await fetch(`/api/runner/targets/${id}/start`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to start target on server:', err);
+    }
+
+    setTargets((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              runnerStatus: 'running',
+              nextRefreshTimestamp: Date.now() + 2000,
+            }
+          : t
+      )
+    );
+  };
+
+  const handlePauseTarget = async (id: string) => {
+    try {
+      await fetch(`/api/runner/targets/${id}/pause`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to pause target on server:', err);
+    }
+
+    setTargets((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              runnerStatus: 'paused',
+              nextRefreshTimestamp: null,
+            }
+          : t
+      )
+    );
+  };
+
+  const handleStopTarget = async (id: string) => {
+    try {
+      await fetch(`/api/runner/targets/${id}/stop`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to stop target on server:', err);
+    }
+
+    setTargets((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              runnerStatus: 'stopped',
+              nextRefreshTimestamp: null,
+            }
+          : t
+      )
+    );
+  };
+
+  const handleInstantRefreshTarget = async (id: string) => {
+    const target = targets.find((t) => t.id === id);
+    if (!target) return;
+
+    if (soundEnabled) {
       playRefreshChime();
     }
 
-    // Always increment key to reload iframe if in dual or iframe mode
-    if (currentCfg.refreshMode === 'dual' || currentCfg.refreshMode === 'iframe') {
-      setRefreshKey((prev) => prev + 1);
+    if (id === selectedTargetId) {
+      setIsRefreshingFrame(true);
+      setRefreshKey((k) => k + 1);
+      setTimeout(() => setIsRefreshingFrame(false), 500);
     }
-
-    let pingOutcome: PingResult | null = null;
-    const intervalUsed = currentIntervalDurationRef.current;
-    const targetUrl = currentCfg.url;
-
-    // Trigger HTTP ping check if in dual or ping mode
-    if (currentCfg.refreshMode === 'dual' || currentCfg.refreshMode === 'ping') {
-      try {
-        const res = await fetch(`/api/ping?url=${encodeURIComponent(targetUrl)}`);
-        if (res.ok) {
-          pingOutcome = await res.json();
-          setLastPing(pingOutcome);
-        }
-      } catch (err: unknown) {
-        const error = err as Error;
-        pingOutcome = {
-          ok: false,
-          status: 500,
-          statusText: error.message || 'Fetch Failed',
-          latencyMs: 0,
-          contentType: 'none',
-          blocksIframe: false,
-          url: targetUrl,
-          timestamp: new Date().toISOString(),
-          error: error.message,
-        };
-        setLastPing(pingOutcome);
-      }
-    }
-
-    const isSuccess = pingOutcome ? pingOutcome.ok : true;
-    const latency = pingOutcome?.latencyMs;
-
-    // Update cycle count
-    setCycleCount((prevCount) => {
-      const newCount = prevCount + 1;
-
-      // Check max cycles auto-stop
-      if (currentCfg.maxCycles > 0 && newCount >= currentCfg.maxCycles) {
-        setTimeout(() => {
-          handleStop();
-          setLogs((l) => [
-            {
-              id: `${Date.now()}-limit`,
-              timestamp: new Date(),
-              url: targetUrl,
-              intervalUsed,
-              status: 'warning',
-              statusCode: 200,
-              message: `Completed target limit of ${currentCfg.maxCycles} refreshes. Auto-stopped.`,
-              cacheBusterApplied: false,
-            },
-            ...l,
-          ]);
-        }, 50);
-      }
-
-      return newCount;
-    });
-
-    // Update session metrics
-    setStats((prev) => {
-      const total = prev.totalRefreshes + 1;
-      const success = isSuccess ? prev.successfulRefreshes + 1 : prev.successfulRefreshes;
-      const failed = isSuccess ? prev.failedRefreshes : prev.failedRefreshes + 1;
-      const newAvgLatency = latency
-        ? Math.round((prev.averageLatencyMs * prev.totalRefreshes + latency) / total)
-        : prev.averageLatencyMs;
-
-      return {
-        ...prev,
-        totalRefreshes: total,
-        successfulRefreshes: success,
-        failedRefreshes: failed,
-        averageLatencyMs: newAvgLatency,
-        lastRefreshedAt: new Date(),
-      };
-    });
-
-    // Append to live logs
-    const newLogEntry: RefreshLogEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      timestamp: new Date(),
-      url: targetUrl,
-      intervalUsed,
-      status: isSuccess ? 'success' : 'error',
-      statusCode: pingOutcome?.status || 200,
-      latencyMs: latency,
-      message: pingOutcome?.statusText || 'Refreshed successfully',
-      cacheBusterApplied: currentCfg.useCacheBuster,
-    };
-
-    setLogs((prev) => [newLogEntry, ...prev.slice(0, 99)]);
-
-    // Prepare next cycle
-    const nextDuration = calculateNextInterval();
-    setCurrentIntervalDuration(nextDuration);
-    setRemainingSeconds(nextDuration);
-    nextRefreshTimestampRef.current = Date.now() + nextDuration * 1000;
-
-    setTimeout(() => {
-      setIsRefreshingNow(false);
-      isRefreshingRef.current = false;
-    }, 400);
-  }, [calculateNextInterval]);
-
-  // Main countdown timer loop: monotonic timestamp based, completely glitch-free
-  useEffect(() => {
-    if (runnerStatus !== 'running') return;
-
-    const intervalTimer = setInterval(() => {
-      const target = nextRefreshTimestampRef.current;
-      if (target <= 0) return;
-
-      const now = Date.now();
-      const remainingMs = target - now;
-
-      if (remainingMs <= 0) {
-        if (!isRefreshingRef.current) {
-          triggerRefreshCycle(false);
-        }
-      } else {
-        const remainingSec = Math.max(0, parseFloat((remainingMs / 1000).toFixed(1)));
-        setRemainingSeconds(remainingSec);
-      }
-    }, 100);
-
-    return () => clearInterval(intervalTimer);
-  }, [runnerStatus, triggerRefreshCycle]);
-
-  // Session Uptime clock
-  useEffect(() => {
-    if (runnerStatus !== 'running') return;
-
-    const uptimeTimer = setInterval(() => {
-      setUptimeSeconds((prev) => prev + 1);
-    }, 1000);
-
-    return () => clearInterval(uptimeTimer);
-  }, [runnerStatus]);
-
-  // Explicit START Function: Starts both server 24/7 runner and client UI loop
-  const handleStart = async () => {
-    if (!stats.startedAt) {
-      setStats((prev) => ({ ...prev, startedAt: new Date() }));
-    }
-    const nextDuration = calculateNextInterval();
-    setCurrentIntervalDuration(nextDuration);
-    setRemainingSeconds(nextDuration);
-    nextRefreshTimestampRef.current = Date.now() + nextDuration * 1000;
-    isRefreshingRef.current = false;
-    pausedRemainingSecondsRef.current = 0;
-    setRunnerStatus('running');
-
-    // Notify backend server to execute 24/7 background refresh loop
-    try {
-      await fetch('/api/runner/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: config.url,
-          intervalType: config.intervalType,
-          fixedSeconds: config.fixedSeconds,
-          randomMinSeconds: config.randomMinSeconds,
-          randomMaxSeconds: config.randomMaxSeconds,
-          refreshMode: config.refreshMode,
-          useCacheBuster: config.useCacheBuster,
-        }),
-      });
-    } catch (err) {
-      console.error('Failed to notify backend runner start:', err);
-    }
-
-    // Add log event
-    setLogs((prev) => [
-      {
-        id: `${Date.now()}-start`,
-        timestamp: new Date(),
-        url: config.url,
-        intervalUsed: nextDuration,
-        status: 'success',
-        statusCode: 200,
-        message: `Auto-refresh started. Continuous 24/7 server keep-alive active (${nextDuration}s cycle).`,
-        cacheBusterApplied: config.useCacheBuster,
-      },
-      ...prev.slice(0, 99),
-    ]);
-
-    // Fire initial refresh right away
-    triggerRefreshCycle(true);
-  };
-
-  // Explicit STOP Function
-  const handleStop = async () => {
-    setRunnerStatus('stopped');
-    nextRefreshTimestampRef.current = 0;
-    pausedRemainingSecondsRef.current = 0;
-    isRefreshingRef.current = false;
-    const nextDuration = calculateNextInterval();
-    setCurrentIntervalDuration(nextDuration);
-    setRemainingSeconds(nextDuration);
 
     try {
-      await fetch('/api/runner/stop', { method: 'POST' });
+      await fetch(`/api/runner/targets/${id}/refresh-now`, { method: 'POST' });
+      // Trigger instant poll to update ping status
+      setTimeout(syncRunnerStatus, 300);
     } catch (err) {
-      console.error('Failed to notify backend runner stop:', err);
+      console.error('Instant refresh failed:', err);
     }
-
-    setLogs((prev) => [
-      {
-        id: `${Date.now()}-stop`,
-        timestamp: new Date(),
-        url: config.url,
-        intervalUsed: currentIntervalDuration,
-        status: 'warning',
-        statusCode: 200,
-        message: 'Auto-refresh loop stopped by user.',
-        cacheBusterApplied: false,
-      },
-      ...prev.slice(0, 99),
-    ]);
   };
 
-  // Explicit PAUSE Function
-  const handlePause = async () => {
-    const remainingMs = Math.max(0, nextRefreshTimestampRef.current - Date.now());
-    pausedRemainingSecondsRef.current = remainingMs / 1000;
-    setRunnerStatus('paused');
-
+  // Master Global Actions
+  const handleStartAll = async () => {
     try {
-      await fetch('/api/runner/pause', { method: 'POST' });
+      await fetch('/api/runner/start-all', { method: 'POST' });
     } catch (err) {
-      console.error('Failed to notify backend runner pause:', err);
+      console.error('Start all failed:', err);
     }
+
+    setTargets((prev) =>
+      prev.map((t) => ({
+        ...t,
+        runnerStatus: 'running',
+        nextRefreshTimestamp: Date.now() + 2000,
+      }))
+    );
   };
 
-  // Explicit RESUME Function
-  const handleResume = async () => {
-    const resumeDuration = pausedRemainingSecondsRef.current > 0.2
-      ? pausedRemainingSecondsRef.current
-      : calculateNextInterval();
-    nextRefreshTimestampRef.current = Date.now() + resumeDuration * 1000;
-    setRemainingSeconds(parseFloat(resumeDuration.toFixed(1)));
-    isRefreshingRef.current = false;
-    setRunnerStatus('running');
-
+  const handlePauseAll = async () => {
     try {
-      await fetch('/api/runner/resume', { method: 'POST' });
+      await fetch('/api/runner/pause-all', { method: 'POST' });
     } catch (err) {
-      console.error('Failed to notify backend runner resume:', err);
+      console.error('Pause all failed:', err);
     }
+
+    setTargets((prev) =>
+      prev.map((t) => ({
+        ...t,
+        runnerStatus: 'paused',
+        nextRefreshTimestamp: null,
+      }))
+    );
   };
 
-  // Instant Force Refresh
-  const handleInstantRefresh = () => {
-    triggerRefreshCycle(true);
+  const handleStopAll = async () => {
+    try {
+      await fetch('/api/runner/stop-all', { method: 'POST' });
+    } catch (err) {
+      console.error('Stop all failed:', err);
+    }
+
+    setTargets((prev) =>
+      prev.map((t) => ({
+        ...t,
+        runnerStatus: 'stopped',
+        nextRefreshTimestamp: null,
+      }))
+    );
   };
 
-  // Reset Session Statistics & Logs
   const handleResetStats = async () => {
-    const nextDuration = calculateNextInterval();
     try {
       await fetch('/api/runner/reset-stats', { method: 'POST' });
     } catch (err) {
-      console.error('Failed to reset backend stats:', err);
+      console.error('Reset stats failed:', err);
     }
-    setStats({
-      totalRefreshes: 0,
-      successfulRefreshes: 0,
-      failedRefreshes: 0,
-      averageLatencyMs: 0,
-      startedAt: runnerStatus === 'running' ? new Date() : null,
-      lastRefreshedAt: null,
-    });
-    setCycleCount(0);
-    setUptimeSeconds(0);
-    setCurrentIntervalDuration(nextDuration);
-    setRemainingSeconds(nextDuration);
+
+    setTargets((prev) =>
+      prev.map((t) => ({
+        ...t,
+        cycleCount: 0,
+        stats: {
+          totalRefreshes: 0,
+          successfulRefreshes: 0,
+          failedRefreshes: 0,
+          averageLatencyMs: 0,
+        },
+      }))
+    );
     setLogs([]);
+    setUptimeSeconds(0);
   };
 
-  // Global Keyboard Shortcuts
+  const toggleSound = () => {
+    const nextVal = !soundEnabled;
+    setSoundEnabled(nextVal);
+    localStorage.setItem(LOCAL_STORAGE_SOUND, String(nextVal));
+  };
+
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -521,239 +536,208 @@ export default function App() {
 
       if (e.code === 'Space') {
         e.preventDefault();
-        if (runnerStatus === 'running') {
-          handlePause();
-        } else if (runnerStatus === 'paused') {
-          handleResume();
+        if (anyRunning) {
+          handlePauseAll();
         } else {
-          handleStart();
+          handleStartAll();
         }
       } else if (e.key === 's' || e.key === 'S') {
         e.preventDefault();
-        handleStop();
+        handleStopAll();
       } else if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
-        handleInstantRefresh();
+        if (activePreviewTarget) {
+          handleInstantRefreshTarget(activePreviewTarget.id);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [runnerStatus, triggerRefreshCycle]);
-
-  // Update Recent URLs list
-  const addRecentUrl = (newUrl: string) => {
-    if (!newUrl) return;
-    setRecentUrls((prev) => {
-      const updated = [newUrl, ...prev.filter((u) => u !== newUrl)].slice(0, 8);
-      try {
-        localStorage.setItem(LOCAL_STORAGE_RECENT_URLS, JSON.stringify(updated));
-      } catch {
-        // Ignore
-      }
-      return updated;
-    });
-  };
-
-  const handleConfigChange = (changes: Partial<RefreshConfig>) => {
-    setConfig((prev) => {
-      const updated = { ...prev, ...changes };
-      if (changes.url && changes.url !== prev.url) {
-        addRecentUrl(changes.url);
-      }
-      return updated;
-    });
-
-    if (
-      changes.intervalType !== undefined ||
-      changes.fixedSeconds !== undefined ||
-      changes.randomMinSeconds !== undefined ||
-      changes.randomMaxSeconds !== undefined
-    ) {
-      const nextDuration = calculateNextInterval();
-      setCurrentIntervalDuration(nextDuration);
-      if (runnerStatus !== 'running') {
-        setRemainingSeconds(nextDuration);
-      }
-    }
-  };
+  }, [anyRunning, activePreviewTarget]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans selection:bg-indigo-600 selection:text-white relative">
-      {/* Subtle ambient gradient mesh for depth */}
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(99,102,241,0.12),rgba(0,0,0,0))] pointer-events-none z-0" />
+    <div className="min-h-screen bg-[#121316] text-zinc-100 flex flex-col font-sans selection:bg-white selection:text-black relative">
+      {/* Soft eye-pleasing ambient lighting */}
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_0%,rgba(255,255,255,0.04),transparent_70%)] pointer-events-none z-0" />
+      {/* Square box background grid */}
+      <div className="fixed inset-0 bg-grid-squares pointer-events-none z-0 opacity-60" />
 
       {/* Top Navbar */}
-      <div className="relative z-20">
+      <div className="relative z-30">
         <Navbar
-          runnerStatus={runnerStatus}
-          onStart={handleStart}
-          onStop={handleStop}
-          onPause={handlePause}
-          soundEnabled={config.soundNotification}
-          onToggleSound={() => handleConfigChange({ soundNotification: !config.soundNotification })}
+          runnerStatus={globalRunnerStatus}
+          onStartAll={handleStartAll}
+          onStopAll={handleStopAll}
+          onPauseAll={handlePauseAll}
+          soundEnabled={soundEnabled}
+          onToggleSound={toggleSound}
           onOpenRailwayModal={() => setIsRailwayModalOpen(true)}
+          onOpenAddModal={() => {
+            setTargetToEdit(null);
+            setIsTargetModalOpen(true);
+          }}
           uptimeSeconds={uptimeSeconds}
-          remainingSeconds={remainingSeconds}
+          activeTargetCount={targets.filter((t) => t.runnerStatus === 'running').length}
+          totalTargetCount={targets.length}
         />
       </div>
 
       {/* Main Workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3.5 sm:p-6 lg:p-8 space-y-6 relative z-10">
-        {/* Persistent 24/7 Background Runner Status Banner */}
-        <div className="bg-gradient-to-r from-indigo-950/40 via-zinc-900/90 to-emerald-950/30 border border-indigo-500/30 rounded-2xl p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-black/20">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shrink-0">
-              <Cloud className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs sm:text-sm font-bold text-zinc-100">
-                  Continuous 24/7 Server Keep-Alive & Background Runner
-                </span>
-                <span
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold ${
-                    isRunning
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : runnerStatus === 'paused'
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isRunning ? 'bg-emerald-400 animate-ping' : 'bg-zinc-500'
-                    }`}
-                  />
-                  {isRunning ? 'Active on Server 24/7' : runnerStatus === 'paused' ? 'Paused' : 'Ready'}
-                </span>
-              </div>
-              <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed">
-                {isRunning
-                  ? 'Refreshes continuously on the server backend even if you close this tab, switch apps, or leave your computer for hours.'
-                  : 'Refreshes run persistently in the cloud background even when you leave or close this browser window.'}
-              </p>
-            </div>
-          </div>
-          {isRunning && (
-            <div className="flex items-center gap-3 self-end sm:self-center shrink-0 border-t sm:border-t-0 sm:border-l border-zinc-800 pt-2 sm:pt-0 sm:pl-4">
-              <div className="text-left sm:text-right">
-                <span className="text-[10px] text-zinc-400 block font-mono">Completed Refreshes</span>
-                <span className="text-xs font-bold text-emerald-400 font-mono">
-                  {stats.totalRefreshes} cycles
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Top Control Grid: URL Input + Interval Configuration */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-          {/* Left Column: Target Website & Master Controls */}
-          <div className="lg:col-span-7 flex flex-col gap-5">
-            <UrlInputBar
-              config={config}
-              onChangeConfig={handleConfigChange}
-              onInstantRefresh={handleInstantRefresh}
-              isRunning={isRunning}
-              recentUrls={recentUrls}
-              onSelectRecentUrl={(selectedUrl) => handleConfigChange({ url: selectedUrl })}
-            />
-
-            {/* Master Tactile Start / Stop / Pause / Resume Controls */}
-            <ControlBar
-              runnerStatus={runnerStatus}
-              onStart={handleStart}
-              onStop={handleStop}
-              onPause={handlePause}
-              onResume={handleResume}
-              onInstantRefresh={handleInstantRefresh}
-              onResetStats={handleResetStats}
-              remainingSeconds={remainingSeconds}
-              totalIntervalSeconds={currentIntervalDuration}
-              isRefreshingNow={isRefreshingNow}
-              currentCycleCount={cycleCount}
-              maxCycles={config.maxCycles}
-            />
+        {/* Big Gradient Head Text & Hero Section */}
+        <section className="text-center sm:text-left py-4 sm:py-6 border-b border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight text-gradient-white">
+              Multi-Site Auto Refresher
+            </h1>
+            <p className="text-xs sm:text-sm text-zinc-400 mt-1.5 max-w-2xl font-mono">
+              Keep multiple websites and APIs awake 24/7 with randomized intervals (10-45s), live sandboxes, and zero-downtime background pings.
+            </p>
           </div>
 
-          {/* Right Column: Timing & Interval Configuration */}
-          <div className="lg:col-span-5">
-            <IntervalConfig
-              config={config}
-              onChangeConfig={handleConfigChange}
-              nextScheduledSeconds={currentIntervalDuration}
-            />
-          </div>
-        </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setTargetToEdit(null);
+                setIsTargetModalOpen(true);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold btn-glow-white"
+            >
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+              <span>Add Site Refresher</span>
+            </motion.button>
 
-        {/* Telemetry Metrics Row */}
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleResetStats}
+              className="p-2.5 rounded-xl text-xs bg-zinc-900 text-zinc-400 hover:text-white border border-white/10 hover:border-white/30 transition-all"
+              title="Reset session counters"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </motion.button>
+          </div>
+        </section>
+
+        {/* Global Telemetry Metrics Cards */}
         <MetricsCards
-          stats={stats}
+          stats={aggregateStats}
           uptimeSeconds={uptimeSeconds}
-          lastPing={lastPing}
-          runnerStatus={runnerStatus}
+          runnerStatus={globalRunnerStatus}
+          totalTargets={targets.length}
+          activeTargets={targets.filter((t) => t.runnerStatus === 'running').length}
         />
 
+        {/* Multi-Refresher Targets Grid */}
+        <section className="space-y-3.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-white" />
+              <h2 className="text-sm font-bold text-white tracking-tight uppercase tracking-wider">
+                Configured Site Refreshers ({targets.length})
+              </h2>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {!anyRunning ? (
+                <button
+                  type="button"
+                  onClick={handleStartAll}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold btn-glow-white"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Start All ({targets.length})</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handlePauseAll}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold btn-glow-dark"
+                >
+                  <Pause className="w-3.5 h-3.5 fill-current" />
+                  <span>Pause All</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <AnimatePresence>
+              {targets.map((target) => (
+                <RefresherCard
+                  key={target.id}
+                  target={target}
+                  isSelectedForPreview={target.id === selectedTargetId}
+                  onSelectForPreview={() => setSelectedTargetId(target.id)}
+                  onStart={() => handleStartTarget(target.id)}
+                  onPause={() => handlePauseTarget(target.id)}
+                  onStop={() => handleStopTarget(target.id)}
+                  onInstantRefresh={() => handleInstantRefreshTarget(target.id)}
+                  onEdit={() => {
+                    setTargetToEdit(target);
+                    setIsTargetModalOpen(true);
+                  }}
+                  onDelete={() => handleDeleteTarget(target.id)}
+                  canDelete={targets.length > 1}
+                />
+              ))}
+            </AnimatePresence>
+          </div>
+        </section>
+
         {/* View Layout Tabs & Keyboard Hints */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-          <div className="flex items-center bg-zinc-900/90 p-1 rounded-xl border border-zinc-800/90 shadow-sm text-xs font-semibold">
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+          <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-white/10 shadow-sm text-xs font-semibold">
             <button
-              id="view-tab-split"
               type="button"
               onClick={() => setActiveView('split')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'split' ? 'bg-zinc-800 text-white shadow-xs' : 'text-zinc-400 hover:text-zinc-200'
+                activeView === 'split' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <LayoutGrid className="w-3.5 h-3.5 text-indigo-400" />
+              <LayoutGrid className="w-3.5 h-3.5" />
               <span>Split View</span>
             </button>
             <button
-              id="view-tab-preview"
               type="button"
               onClick={() => setActiveView('preview')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'preview' ? 'bg-zinc-800 text-white shadow-xs' : 'text-zinc-400 hover:text-zinc-200'
+                activeView === 'preview' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <Eye className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Live Preview Only</span>
+              <Eye className="w-3.5 h-3.5" />
+              <span>Live Preview</span>
             </button>
             <button
-              id="view-tab-logs"
               type="button"
               onClick={() => setActiveView('logs')}
               className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                activeView === 'logs' ? 'bg-zinc-800 text-white shadow-xs' : 'text-zinc-400 hover:text-zinc-200'
+                activeView === 'logs' ? 'bg-white text-black font-bold glow-white-sm' : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <Terminal className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Activity Logs Only</span>
+              <Terminal className="w-3.5 h-3.5" />
+              <span>Activity & Errors</span>
             </button>
           </div>
 
-          {/* Keyboard shortcuts reminder */}
-          <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-400 font-medium">
+          {/* Keyboard hints */}
+          <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-400 font-mono">
             <span className="inline-flex items-center gap-1.5">
-              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-800/90 border border-zinc-700 font-mono text-[10px] text-zinc-300 shadow-2xs">
+              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-900 border border-white/20 text-white font-mono text-[10px]">
                 Space
               </kbd>
-              <span>Play / Pause</span>
+              <span>Toggle All</span>
             </span>
             <span className="text-zinc-700">•</span>
             <span className="inline-flex items-center gap-1.5">
-              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-800/90 border border-zinc-700 font-mono text-[10px] text-zinc-300 shadow-2xs">
-                S
-              </kbd>
-              <span>Stop</span>
-            </span>
-            <span className="text-zinc-700">•</span>
-            <span className="inline-flex items-center gap-1.5">
-              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-800/90 border border-zinc-700 font-mono text-[10px] text-zinc-300 shadow-2xs">
+              <kbd className="px-1.5 py-0.5 rounded-md bg-zinc-900 border border-white/20 text-white font-mono text-[10px]">
                 R
               </kbd>
-              <span>Refresh Now</span>
+              <span>Refresh Active</span>
             </span>
           </div>
         </div>
@@ -763,25 +747,45 @@ export default function App() {
           {(activeView === 'split' || activeView === 'preview') && (
             <div className={activeView === 'split' ? 'lg:col-span-8' : 'lg:col-span-12'}>
               <LiveFrame
-                url={config.url}
+                url={activePreviewTarget?.url || ''}
+                name={activePreviewTarget?.name}
                 refreshKey={refreshKey}
-                isLoading={isRefreshingNow}
-                onManualRefresh={handleInstantRefresh}
-                lastPing={lastPing}
-                mode={config.refreshMode}
+                isLoading={isRefreshingFrame}
+                onManualRefresh={() => {
+                  if (activePreviewTarget) {
+                    handleInstantRefreshTarget(activePreviewTarget.id);
+                  }
+                }}
+                lastPing={activePreviewTarget?.lastPing || null}
+                mode={activePreviewTarget?.refreshMode || 'dual'}
               />
             </div>
           )}
 
           {(activeView === 'split' || activeView === 'logs') && (
             <div className={activeView === 'split' ? 'lg:col-span-4' : 'lg:col-span-12'}>
-              <ActivityLog logs={logs} onClearLogs={() => setLogs([])} />
+              <ActivityLog
+                logs={logs}
+                onClearLogs={() => setLogs([])}
+                targetNames={targets.map((t) => ({ id: t.id, name: t.name }))}
+              />
             </div>
           )}
         </div>
       </main>
 
-      {/* Railway Deployment Modal */}
+      {/* Target Modal (Add / Edit) */}
+      <TargetModal
+        isOpen={isTargetModalOpen}
+        onClose={() => {
+          setIsTargetModalOpen(false);
+          setTargetToEdit(null);
+        }}
+        onSave={handleSaveTarget}
+        targetToEdit={targetToEdit}
+      />
+
+      {/* Railway Deployment Guide Modal */}
       <RailwayDeployModal
         isOpen={isRailwayModalOpen}
         onClose={() => setIsRailwayModalOpen(false)}

@@ -2,8 +2,10 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 
-interface ServerLogEntry {
+export interface ServerLogEntry {
   id: string;
+  targetId?: string;
+  targetName?: string;
   timestamp: string;
   url: string;
   intervalUsed: number;
@@ -14,20 +16,21 @@ interface ServerLogEntry {
   cacheBusterApplied: boolean;
 }
 
-interface ServerRunnerState {
-  targetUrl: string;
-  isRunning: boolean;
-  runnerStatus: 'idle' | 'running' | 'paused';
-  startedAt: string | null;
+export interface ServerTargetState {
+  id: string;
+  name: string;
+  url: string;
+  runnerStatus: 'idle' | 'running' | 'paused' | 'stopped';
   intervalType: 'fixed' | 'random';
   fixedSeconds: number;
   randomMinSeconds: number;
   randomMaxSeconds: number;
   refreshMode: 'dual' | 'iframe' | 'ping';
   useCacheBuster: boolean;
+  maxCycles: number;
+  cycleCount: number;
   nextRefreshTimestamp: number | null;
   lastRefreshAt: string | null;
-  cycleCount: number;
   stats: {
     totalRefreshes: number;
     successfulRefreshes: number;
@@ -48,98 +51,58 @@ interface ServerRunnerState {
     timestamp: string;
     error?: string;
   } | null;
-  logs: ServerLogEntry[];
 }
 
-// In-memory state for persistent background runner
-const runnerState: ServerRunnerState = {
-  targetUrl: '',
-  isRunning: false,
-  runnerStatus: 'idle',
-  startedAt: null,
-  intervalType: 'fixed',
-  fixedSeconds: 15,
-  randomMinSeconds: 10,
-  randomMaxSeconds: 45,
-  refreshMode: 'dual',
-  useCacheBuster: false,
-  nextRefreshTimestamp: null,
-  lastRefreshAt: null,
-  cycleCount: 0,
-  stats: {
-    totalRefreshes: 0,
-    successfulRefreshes: 0,
-    failedRefreshes: 0,
-    averageLatencyMs: 0,
-    totalLatencyMs: 0,
-  },
-  lastPing: null,
-  logs: [],
-};
-
-let runnerTimer: NodeJS.Timeout | null = null;
 const STATE_FILE_PATH = path.resolve(process.cwd(), 'runner-state.json');
 
-// Save runner state to file so it survives cold boots
+// Store targets in memory
+const targets = new Map<string, ServerTargetState>();
+const targetTimers = new Map<string, NodeJS.Timeout>();
+let globalLogs: ServerLogEntry[] = [];
+
+// Helper: Calculate next interval for a specific target
+function calculateNextIntervalSeconds(target: ServerTargetState): number {
+  if (target.intervalType === 'random') {
+    const min = Math.max(1, Math.min(target.randomMinSeconds, target.randomMaxSeconds));
+    const max = Math.max(min, Math.max(target.randomMinSeconds, target.randomMaxSeconds));
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+  return Math.max(1, target.fixedSeconds || 15);
+}
+
+// Persist multi-target state to disk
 function persistRunnerState() {
   try {
     const dataToSave = {
-      ...runnerState,
-      logs: runnerState.logs.slice(0, 50),
+      targets: Array.from(targets.values()),
+      logs: globalLogs.slice(0, 80),
     };
     fs.writeFileSync(STATE_FILE_PATH, JSON.stringify(dataToSave, null, 2));
   } catch (err) {
-    console.error('Failed to persist runner state:', err);
+    // Only log errors
+    console.error('[Auto-Refresher Error] Failed to persist state:', err);
   }
 }
 
-// Load runner state on startup if available
-function loadPersistedRunnerState() {
-  try {
-    if (fs.existsSync(STATE_FILE_PATH)) {
-      const raw = fs.readFileSync(STATE_FILE_PATH, 'utf-8');
-      const saved = JSON.parse(raw);
-      if (saved && typeof saved === 'object') {
-        Object.assign(runnerState, saved);
-        // If it was running when server closed, automatically resume refreshing
-        if (runnerState.isRunning && runnerState.runnerStatus === 'running' && runnerState.targetUrl) {
-          console.log(`[Auto-Refresher] Resuming persistent background refresh for ${runnerState.targetUrl}`);
-          scheduleNextCycle(1);
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Failed to load persisted runner state:', err);
-  }
-}
-
-function calculateNextIntervalSeconds(): number {
-  if (runnerState.intervalType === 'random') {
-    const min = Math.max(1, runnerState.randomMinSeconds);
-    const max = Math.max(min, runnerState.randomMaxSeconds);
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-  return Math.max(1, runnerState.fixedSeconds);
-}
-
-// Core execution cycle that pings the target website 24/7 on the server
-async function executeRefreshCycle() {
-  if (!runnerState.isRunning || runnerState.runnerStatus !== 'running' || !runnerState.targetUrl) {
+// Single core ping execution for a target
+async function executeTargetCycle(targetId: string) {
+  const target = targets.get(targetId);
+  if (!target || target.runnerStatus !== 'running' || !target.url) {
     return;
   }
 
-  const clean = runnerState.targetUrl.trim();
+  const clean = target.url.trim();
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(clean.startsWith('http://') || clean.startsWith('https://') ? clean : `https://${clean}`);
   } catch {
-    console.error('[Auto-Refresher] Invalid URL:', clean);
+    console.error(`[Auto-Refresher Error] Target "${target.name}" has invalid URL: ${clean}`);
     return;
   }
 
-  // Apply cache-buster query param if enabled
+  // Construct fetch URL with cache buster if enabled
   const fetchUrl = new URL(parsedUrl.toString());
-  if (runnerState.useCacheBuster) {
+  if (target.useCacheBuster) {
     fetchUrl.searchParams.set('_keepalive_cb', Date.now().toString());
   }
 
@@ -151,16 +114,17 @@ async function executeRefreshCycle() {
   let xFrameOptions: string | null = null;
   let blocksIframe = false;
   let isRailway = false;
+  let errorDetail: string | undefined = undefined;
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
     const response = await fetch(fetchUrl.toString(), {
       method: 'GET',
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (Keep-Alive Engine)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 (KeepAlive-MultiPinger)',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
@@ -188,25 +152,34 @@ async function executeRefreshCycle() {
     const error = err as Error;
     const isTimeout = error.name === 'AbortError';
     statusCode = isTimeout ? 408 : 502;
-    statusText = isTimeout ? 'Timeout' : (error.message || 'Fetch Failed');
+    statusText = isTimeout ? 'Request Timeout (15s)' : (error.message || 'Fetch Failed');
     isOk = false;
+    errorDetail = error.message;
+
+    // USER REQUIREMENT: Only log when errors happen! No 200 OK console logs!
+    console.error(`[Auto-Refresher Error] ${target.name} (${parsedUrl.hostname}) failed: ${statusCode} ${statusText}`);
   }
 
-  // Update telemetry
-  runnerState.cycleCount += 1;
-  runnerState.stats.totalRefreshes += 1;
+  // Update target statistics
+  target.cycleCount += 1;
+  target.stats.totalRefreshes += 1;
   if (isOk) {
-    runnerState.stats.successfulRefreshes += 1;
+    target.stats.successfulRefreshes += 1;
   } else {
-    runnerState.stats.failedRefreshes += 1;
+    target.stats.failedRefreshes += 1;
+    // If not an exception, but HTTP error (4xx or 5xx), log it as an error
+    if (statusCode >= 400 && !errorDetail) {
+      console.error(`[Auto-Refresher Error] ${target.name} (${parsedUrl.hostname}) responded with HTTP ${statusCode} ${statusText}`);
+    }
   }
-  runnerState.stats.totalLatencyMs += latencyMs;
-  runnerState.stats.averageLatencyMs = Math.round(
-    runnerState.stats.totalLatencyMs / runnerState.stats.totalRefreshes
-  );
 
-  runnerState.lastRefreshAt = new Date().toISOString();
-  runnerState.lastPing = {
+  target.stats.totalLatencyMs += latencyMs;
+  target.stats.averageLatencyMs = Math.round(
+    target.stats.totalLatencyMs / target.stats.totalRefreshes
+  );
+  target.lastRefreshAt = new Date().toISOString();
+
+  target.lastPing = {
     ok: isOk,
     status: statusCode,
     statusText,
@@ -216,51 +189,166 @@ async function executeRefreshCycle() {
     xFrameOptions,
     isRailway,
     url: parsedUrl.toString(),
-    timestamp: runnerState.lastRefreshAt,
+    timestamp: target.lastRefreshAt,
+    error: errorDetail,
   };
 
-  // Add to in-memory audit log (capped at 100)
+  // Add entry to audit log
   const logEntry: ServerLogEntry = {
-    id: `srv-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    timestamp: runnerState.lastRefreshAt,
+    id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    targetId: target.id,
+    targetName: target.name,
+    timestamp: target.lastRefreshAt,
     url: parsedUrl.toString(),
     intervalUsed: Math.round(latencyMs / 100) / 10,
     status: isOk ? 'success' : statusCode < 400 ? 'warning' : 'error',
     statusCode,
     latencyMs,
     message: isOk ? `Refreshed successfully (${statusCode})` : `HTTP ${statusCode}: ${statusText}`,
-    cacheBusterApplied: runnerState.useCacheBuster,
+    cacheBusterApplied: target.useCacheBuster,
   };
 
-  runnerState.logs.unshift(logEntry);
-  if (runnerState.logs.length > 100) {
-    runnerState.logs.pop();
+  globalLogs.unshift(logEntry);
+  if (globalLogs.length > 100) {
+    globalLogs.pop();
   }
 
-  console.log(`[Auto-Refresher] Ping ${runnerState.cycleCount} to ${clean} - ${statusCode} (${latencyMs}ms)`);
+  // Check if maxCycles limit was reached
+  if (target.maxCycles > 0 && target.cycleCount >= target.maxCycles) {
+    target.runnerStatus = 'stopped';
+    target.nextRefreshTimestamp = null;
+    clearTargetTimer(target.id);
+    persistRunnerState();
+    return;
+  }
 
-  // Persist state periodically
-  persistRunnerState();
-
-  // Schedule next refresh cycle
-  if (runnerState.isRunning && runnerState.runnerStatus === 'running') {
-    const nextIntervalSec = calculateNextIntervalSeconds();
+  // Schedule next cycle if still running
+  if (target.runnerStatus === 'running') {
+    const nextIntervalSec = calculateNextIntervalSeconds(target);
     logEntry.intervalUsed = nextIntervalSec;
-    scheduleNextCycle(nextIntervalSec);
+    scheduleTargetNextCycle(target.id, nextIntervalSec);
+  }
+
+  persistRunnerState();
+}
+
+function clearTargetTimer(targetId: string) {
+  const existingTimer = targetTimers.get(targetId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    targetTimers.delete(targetId);
   }
 }
 
-function scheduleNextCycle(delaySeconds: number) {
-  if (runnerTimer) {
-    clearTimeout(runnerTimer);
-    runnerTimer = null;
-  }
-  runnerState.nextRefreshTimestamp = Date.now() + delaySeconds * 1000;
-  runnerTimer = setTimeout(() => {
-    executeRefreshCycle().catch((err) => {
-      console.error('[Auto-Refresher] Error during refresh cycle:', err);
+function scheduleTargetNextCycle(targetId: string, delaySeconds: number) {
+  clearTargetTimer(targetId);
+  const target = targets.get(targetId);
+  if (!target) return;
+
+  target.nextRefreshTimestamp = Date.now() + delaySeconds * 1000;
+  const timer = setTimeout(() => {
+    executeTargetCycle(targetId).catch((err) => {
+      console.error(`[Auto-Refresher Error] Cycle exception for target ${targetId}:`, err);
     });
   }, delaySeconds * 1000);
+
+  targetTimers.set(targetId, timer);
+}
+
+// Initialize default targets or load persisted state
+function loadPersistedRunnerState() {
+  try {
+    if (fs.existsSync(STATE_FILE_PATH)) {
+      const raw = fs.readFileSync(STATE_FILE_PATH, 'utf-8');
+      const saved = JSON.parse(raw);
+
+      if (saved && Array.isArray(saved.targets) && saved.targets.length > 0) {
+        for (const t of saved.targets) {
+          targets.set(t.id, {
+            ...t,
+            runnerStatus: t.runnerStatus || 'idle',
+            stats: t.stats || {
+              totalRefreshes: 0,
+              successfulRefreshes: 0,
+              failedRefreshes: 0,
+              averageLatencyMs: 0,
+              totalLatencyMs: 0,
+            },
+          });
+
+          // Resume running targets automatically
+          if (t.runnerStatus === 'running' && t.url) {
+            scheduleTargetNextCycle(t.id, 2);
+          }
+        }
+      } else if (saved && saved.targetUrl) {
+        // Migration from legacy single-target runner state
+        const legacyTarget: ServerTargetState = {
+          id: 'target-1',
+          name: 'Primary Site',
+          url: saved.targetUrl,
+          runnerStatus: saved.runnerStatus === 'running' ? 'running' : 'idle',
+          intervalType: saved.intervalType || 'random',
+          fixedSeconds: saved.fixedSeconds || 15,
+          randomMinSeconds: saved.randomMinSeconds || 10,
+          randomMaxSeconds: saved.randomMaxSeconds || 45,
+          refreshMode: saved.refreshMode || 'dual',
+          useCacheBuster: Boolean(saved.useCacheBuster),
+          maxCycles: 0,
+          cycleCount: saved.cycleCount || 0,
+          nextRefreshTimestamp: null,
+          lastRefreshAt: saved.lastRefreshAt || null,
+          stats: saved.stats || {
+            totalRefreshes: 0,
+            successfulRefreshes: 0,
+            failedRefreshes: 0,
+            averageLatencyMs: 0,
+            totalLatencyMs: 0,
+          },
+          lastPing: saved.lastPing || null,
+        };
+        targets.set(legacyTarget.id, legacyTarget);
+        if (legacyTarget.runnerStatus === 'running') {
+          scheduleTargetNextCycle(legacyTarget.id, 2);
+        }
+      }
+
+      if (Array.isArray(saved.logs)) {
+        globalLogs = saved.logs;
+      }
+    }
+  } catch (err) {
+    console.error('[Auto-Refresher Error] Failed to load runner state:', err);
+  }
+
+  // Ensure at least one default target exists
+  if (targets.size === 0) {
+    const defaultTarget: ServerTargetState = {
+      id: 'target-1',
+      name: 'Primary Site',
+      url: 'https://example.com',
+      runnerStatus: 'idle',
+      intervalType: 'random',
+      fixedSeconds: 15,
+      randomMinSeconds: 10,
+      randomMaxSeconds: 45,
+      refreshMode: 'dual',
+      useCacheBuster: true,
+      maxCycles: 0,
+      cycleCount: 0,
+      nextRefreshTimestamp: null,
+      lastRefreshAt: null,
+      stats: {
+        totalRefreshes: 0,
+        successfulRefreshes: 0,
+        failedRefreshes: 0,
+        averageLatencyMs: 0,
+        totalLatencyMs: 0,
+      },
+      lastPing: null,
+    };
+    targets.set(defaultTarget.id, defaultTarget);
+  }
 }
 
 async function startServer() {
@@ -269,163 +357,279 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Load any previously persisted state
+  // Load persisted states
   loadPersistedRunnerState();
 
-  // Health endpoint for Railway, monitoring, and keep-alive checks
+  // Health endpoint for Railway, keep-alive, and monitoring
   app.all(['/api/health', '/health', '/ping'], (_req: Request, res: Response) => {
+    const targetList = Array.from(targets.values());
+    const runningCount = targetList.filter((t) => t.runnerStatus === 'running').length;
     res.status(200).json({
       status: 'ok',
       service: 'auto-website-refresher',
       uptime: process.uptime(),
       port: PORT,
-      backgroundRunner: {
-        isRunning: runnerState.isRunning,
-        status: runnerState.runnerStatus,
-        targetUrl: runnerState.targetUrl,
-        totalRefreshes: runnerState.stats.totalRefreshes,
-      },
+      activeTargets: targetList.length,
+      runningTargets: runningCount,
       timestamp: new Date().toISOString(),
     });
   });
 
-  // Runner API: Get current background status (polled by browser or retrieved after tab reopen)
+  // Runner API: Get all targets & status
   app.get('/api/runner/status', (_req: Request, res: Response) => {
-    const uptimeSec = runnerState.startedAt
-      ? Math.floor((Date.now() - new Date(runnerState.startedAt).getTime()) / 1000)
+    const targetList = Array.from(targets.values()).map((t) => {
+      const remainingSec = t.nextRefreshTimestamp
+        ? Math.max(0, Math.ceil((t.nextRefreshTimestamp - Date.now()) / 1000))
+        : 0;
+      return {
+        ...t,
+        remainingSeconds: remainingSec,
+      };
+    });
+
+    const totalRefreshes = targetList.reduce((acc, t) => acc + t.stats.totalRefreshes, 0);
+    const successfulRefreshes = targetList.reduce((acc, t) => acc + t.stats.successfulRefreshes, 0);
+    const failedRefreshes = targetList.reduce((acc, t) => acc + t.stats.failedRefreshes, 0);
+    const avgLatency = targetList.length > 0
+      ? Math.round(targetList.reduce((acc, t) => acc + (t.stats.averageLatencyMs || 0), 0) / targetList.length)
       : 0;
 
-    const remainingSec = runnerState.nextRefreshTimestamp
-      ? Math.max(0, Math.ceil((runnerState.nextRefreshTimestamp - Date.now()) / 1000))
-      : 0;
+    const anyRunning = targetList.some((t) => t.runnerStatus === 'running');
+    const allPaused = targetList.length > 0 && targetList.every((t) => t.runnerStatus === 'paused');
 
     res.json({
-      isRunning: runnerState.isRunning,
-      runnerStatus: runnerState.runnerStatus,
-      targetUrl: runnerState.targetUrl,
-      startedAt: runnerState.startedAt,
-      uptimeSeconds: uptimeSec,
-      intervalType: runnerState.intervalType,
-      fixedSeconds: runnerState.fixedSeconds,
-      randomMinSeconds: runnerState.randomMinSeconds,
-      randomMaxSeconds: runnerState.randomMaxSeconds,
-      refreshMode: runnerState.refreshMode,
-      useCacheBuster: runnerState.useCacheBuster,
-      nextRefreshTimestamp: runnerState.nextRefreshTimestamp,
-      remainingSeconds: remainingSec,
-      stats: runnerState.stats,
-      lastPing: runnerState.lastPing,
-      logs: runnerState.logs,
+      targets: targetList,
+      // Global overview
+      runnerStatus: anyRunning ? 'running' : allPaused ? 'paused' : 'idle',
+      isRunning: anyRunning,
+      stats: {
+        totalRefreshes,
+        successfulRefreshes,
+        failedRefreshes,
+        averageLatencyMs: avgLatency,
+      },
+      logs: globalLogs,
       serverTime: Date.now(),
     });
   });
 
-  // Runner API: Start 24/7 background refresh loop
-  app.post('/api/runner/start', (req: Request, res: Response) => {
+  // Runner API: Add a new target refresher
+  app.post('/api/runner/targets', (req: Request, res: Response) => {
     const {
+      name,
       url,
-      intervalType = 'fixed',
+      intervalType = 'random',
       fixedSeconds = 15,
       randomMinSeconds = 10,
       randomMaxSeconds = 45,
       refreshMode = 'dual',
-      useCacheBuster = false,
+      useCacheBuster = true,
+      maxCycles = 0,
+      autoStart = false,
     } = req.body || {};
 
     if (!url || typeof url !== 'string' || !url.trim()) {
-      res.status(400).json({ error: 'Target URL is required' });
+      res.status(400).json({ error: 'Valid URL is required' });
       return;
     }
 
-    runnerState.targetUrl = url.trim();
-    runnerState.intervalType = intervalType === 'random' ? 'random' : 'fixed';
-    runnerState.fixedSeconds = Number(fixedSeconds) || 15;
-    runnerState.randomMinSeconds = Number(randomMinSeconds) || 10;
-    runnerState.randomMaxSeconds = Number(randomMaxSeconds) || 45;
-    runnerState.refreshMode = refreshMode;
-    runnerState.useCacheBuster = Boolean(useCacheBuster);
+    const newId = `target-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newTarget: ServerTargetState = {
+      id: newId,
+      name: (name && typeof name === 'string' && name.trim()) ? name.trim() : `Refresher #${targets.size + 1}`,
+      url: url.trim(),
+      runnerStatus: autoStart ? 'running' : 'idle',
+      intervalType: intervalType === 'fixed' ? 'fixed' : 'random',
+      fixedSeconds: Number(fixedSeconds) || 15,
+      randomMinSeconds: Number(randomMinSeconds) || 10,
+      randomMaxSeconds: Number(randomMaxSeconds) || 45,
+      refreshMode: refreshMode || 'dual',
+      useCacheBuster: Boolean(useCacheBuster),
+      maxCycles: Number(maxCycles) || 0,
+      cycleCount: 0,
+      nextRefreshTimestamp: null,
+      lastRefreshAt: null,
+      stats: {
+        totalRefreshes: 0,
+        successfulRefreshes: 0,
+        failedRefreshes: 0,
+        averageLatencyMs: 0,
+        totalLatencyMs: 0,
+      },
+      lastPing: null,
+    };
 
-    if (!runnerState.startedAt || runnerState.runnerStatus === 'idle') {
-      runnerState.startedAt = new Date().toISOString();
-    }
-    runnerState.isRunning = true;
-    runnerState.runnerStatus = 'running';
-
-    // Persist and schedule first cycle immediately
-    persistRunnerState();
-    scheduleNextCycle(1);
-
-    console.log(`[Auto-Refresher] Started 24/7 background refresh loop for ${runnerState.targetUrl}`);
-    res.json({ success: true, message: 'Background runner started', state: runnerState });
-  });
-
-  // Runner API: Pause loop
-  app.post('/api/runner/pause', (_req: Request, res: Response) => {
-    if (runnerTimer) {
-      clearTimeout(runnerTimer);
-      runnerTimer = null;
-    }
-    runnerState.runnerStatus = 'paused';
-    runnerState.nextRefreshTimestamp = null;
+    targets.set(newId, newTarget);
     persistRunnerState();
 
-    console.log('[Auto-Refresher] Paused background refresh loop');
-    res.json({ success: true, message: 'Background runner paused', state: runnerState });
+    if (autoStart) {
+      scheduleTargetNextCycle(newId, 1);
+    }
+
+    res.json({ success: true, target: newTarget });
   });
 
-  // Runner API: Resume loop
-  app.post('/api/runner/resume', (_req: Request, res: Response) => {
-    if (!runnerState.targetUrl) {
-      res.status(400).json({ error: 'No target URL configured' });
+  // Runner API: Update a target refresher
+  app.put('/api/runner/targets/:id', (req: Request, res: Response) => {
+    const target = targets.get(req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
       return;
     }
 
-    runnerState.isRunning = true;
-    runnerState.runnerStatus = 'running';
-    const nextSec = calculateNextIntervalSeconds();
-    scheduleNextCycle(nextSec);
-    persistRunnerState();
+    const {
+      name,
+      url,
+      intervalType,
+      fixedSeconds,
+      randomMinSeconds,
+      randomMaxSeconds,
+      refreshMode,
+      useCacheBuster,
+      maxCycles,
+    } = req.body || {};
 
-    console.log('[Auto-Refresher] Resumed background refresh loop');
-    res.json({ success: true, message: 'Background runner resumed', state: runnerState });
+    if (name !== undefined) target.name = String(name).trim() || target.name;
+    if (url !== undefined && String(url).trim()) target.url = String(url).trim();
+    if (intervalType !== undefined) target.intervalType = intervalType === 'fixed' ? 'fixed' : 'random';
+    if (fixedSeconds !== undefined) target.fixedSeconds = Number(fixedSeconds) || target.fixedSeconds;
+    if (randomMinSeconds !== undefined) target.randomMinSeconds = Number(randomMinSeconds) || target.randomMinSeconds;
+    if (randomMaxSeconds !== undefined) target.randomMaxSeconds = Number(randomMaxSeconds) || target.randomMaxSeconds;
+    if (refreshMode !== undefined) target.refreshMode = refreshMode;
+    if (useCacheBuster !== undefined) target.useCacheBuster = Boolean(useCacheBuster);
+    if (maxCycles !== undefined) target.maxCycles = Number(maxCycles) || 0;
+
+    persistRunnerState();
+    res.json({ success: true, target });
   });
 
-  // Runner API: Stop loop
-  app.post('/api/runner/stop', (_req: Request, res: Response) => {
-    if (runnerTimer) {
-      clearTimeout(runnerTimer);
-      runnerTimer = null;
+  // Runner API: Delete target refresher
+  app.delete('/api/runner/targets/:id', (req: Request, res: Response) => {
+    const id = req.params.id;
+    if (targets.size <= 1) {
+      res.status(400).json({ error: 'Cannot delete the only refresher target. Must keep at least one.' });
+      return;
     }
-    runnerState.isRunning = false;
-    runnerState.runnerStatus = 'idle';
-    runnerState.nextRefreshTimestamp = null;
-    persistRunnerState();
 
-    console.log('[Auto-Refresher] Stopped background refresh loop');
-    res.json({ success: true, message: 'Background runner stopped', state: runnerState });
+    clearTargetTimer(id);
+    targets.delete(id);
+    persistRunnerState();
+    res.json({ success: true, message: 'Target removed' });
+  });
+
+  // Runner API: Start specific target
+  app.post('/api/runner/targets/:id/start', (req: Request, res: Response) => {
+    const target = targets.get(req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
+      return;
+    }
+
+    target.runnerStatus = 'running';
+    scheduleTargetNextCycle(target.id, 1);
+    persistRunnerState();
+    res.json({ success: true, target });
+  });
+
+  // Runner API: Pause specific target
+  app.post('/api/runner/targets/:id/pause', (req: Request, res: Response) => {
+    const target = targets.get(req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
+      return;
+    }
+
+    target.runnerStatus = 'paused';
+    target.nextRefreshTimestamp = null;
+    clearTargetTimer(target.id);
+    persistRunnerState();
+    res.json({ success: true, target });
+  });
+
+  // Runner API: Stop specific target
+  app.post('/api/runner/targets/:id/stop', (req: Request, res: Response) => {
+    const target = targets.get(req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
+      return;
+    }
+
+    target.runnerStatus = 'stopped';
+    target.nextRefreshTimestamp = null;
+    clearTargetTimer(target.id);
+    persistRunnerState();
+    res.json({ success: true, target });
+  });
+
+  // Runner API: Instant refresh specific target
+  app.post('/api/runner/targets/:id/refresh-now', (req: Request, res: Response) => {
+    const target = targets.get(req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
+      return;
+    }
+
+    executeTargetCycle(target.id).catch((err) => {
+      console.error(`[Auto-Refresher Error] Instant refresh failed for target ${target.id}:`, err);
+    });
+
+    res.json({ success: true, message: 'Refresh triggered' });
+  });
+
+  // Runner API: Start all targets
+  app.post('/api/runner/start-all', (_req: Request, res: Response) => {
+    for (const target of targets.values()) {
+      if (target.url) {
+        target.runnerStatus = 'running';
+        scheduleTargetNextCycle(target.id, 1);
+      }
+    }
+    persistRunnerState();
+    res.json({ success: true, message: 'All targets started' });
+  });
+
+  // Runner API: Pause all targets
+  app.post('/api/runner/pause-all', (_req: Request, res: Response) => {
+    for (const target of targets.values()) {
+      target.runnerStatus = 'paused';
+      target.nextRefreshTimestamp = null;
+      clearTargetTimer(target.id);
+    }
+    persistRunnerState();
+    res.json({ success: true, message: 'All targets paused' });
+  });
+
+  // Runner API: Stop all targets
+  app.post('/api/runner/stop-all', (_req: Request, res: Response) => {
+    for (const target of targets.values()) {
+      target.runnerStatus = 'stopped';
+      target.nextRefreshTimestamp = null;
+      clearTargetTimer(target.id);
+    }
+    persistRunnerState();
+    res.json({ success: true, message: 'All targets stopped' });
   });
 
   // Runner API: Reset statistics & logs
   app.post('/api/runner/reset-stats', (_req: Request, res: Response) => {
-    runnerState.stats = {
-      totalRefreshes: 0,
-      successfulRefreshes: 0,
-      failedRefreshes: 0,
-      averageLatencyMs: 0,
-      totalLatencyMs: 0,
-    };
-    runnerState.cycleCount = 0;
-    runnerState.logs = [];
-    runnerState.startedAt = runnerState.isRunning ? new Date().toISOString() : null;
+    for (const target of targets.values()) {
+      target.stats = {
+        totalRefreshes: 0,
+        successfulRefreshes: 0,
+        failedRefreshes: 0,
+        averageLatencyMs: 0,
+        totalLatencyMs: 0,
+      };
+      target.cycleCount = 0;
+    }
+    globalLogs = [];
     persistRunnerState();
-
     res.json({ success: true, message: 'Stats and logs reset' });
   });
 
-  // Manual Ping endpoint for instant on-demand tests
+  // Manual ping endpoint (USER REQUIREMENT: NO console.log for 200 OK! Only error logging!)
   app.get('/api/ping', async (req: Request, res: Response) => {
     const targetUrl = req.query.url as string;
-
     if (!targetUrl) {
       res.status(400).json({ error: 'URL query parameter is required' });
       return;
@@ -446,22 +650,20 @@ async function startServer() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       let response: globalThis.Response;
-      const requestHeaders = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      };
-
       try {
         response = await fetch(parsedUrl.toString(), {
           method: 'GET',
           signal: controller.signal,
           redirect: 'follow',
-          headers: requestHeaders,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+          },
         });
       } finally {
         clearTimeout(timeoutId);
@@ -480,6 +682,11 @@ async function startServer() {
         (csp && csp.toLowerCase().includes('frame-ancestors'))
       );
 
+      // Only log if HTTP error
+      if (!response.ok) {
+        console.error(`[Auto-Refresher Error] Ping to ${parsedUrl.hostname} returned status ${response.status}`);
+      }
+
       res.json({
         ok: response.ok,
         status: response.status,
@@ -497,10 +704,13 @@ async function startServer() {
       const error = err as Error;
       const isTimeout = error.name === 'AbortError';
 
+      // Log errors
+      console.error(`[Auto-Refresher Error] Ping failed for ${parsedUrl.hostname}: ${error.message}`);
+
       res.status(200).json({
         ok: false,
         status: isTimeout ? 408 : 502,
-        statusText: isTimeout ? 'Request Timeout (25s - server may be cold booting)' : (error.message || 'Network Fetch Failed'),
+        statusText: isTimeout ? 'Request Timeout (15s)' : (error.message || 'Network Fetch Failed'),
         latencyMs,
         contentType: 'none',
         blocksIframe: false,
@@ -533,9 +743,9 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Auto Website Refresher running on port ${PORT} (0.0.0.0)`);
+    // Clean single startup announcement
+    console.log(`Auto Website Refresher engine ready on http://0.0.0.0:${PORT}`);
   });
 }
 
 startServer();
-

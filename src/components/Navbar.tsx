@@ -1,30 +1,34 @@
 import React from 'react';
-import { RefreshCw, Volume2, VolumeX, Terminal, Play, Square, Pause } from 'lucide-react';
+import { RefreshCw, Volume2, VolumeX, Terminal, Play, Square, Pause, Plus, Layers } from 'lucide-react';
 import { RunnerStatus } from '../types';
 import { motion } from 'motion/react';
 
 interface NavbarProps {
   runnerStatus: RunnerStatus;
-  onStart: () => void;
-  onStop: () => void;
-  onPause: () => void;
+  onStartAll: () => void;
+  onStopAll: () => void;
+  onPauseAll: () => void;
   soundEnabled: boolean;
   onToggleSound: () => void;
   onOpenRailwayModal: () => void;
+  onOpenAddModal: () => void;
   uptimeSeconds: number;
-  remainingSeconds?: number;
+  activeTargetCount: number;
+  totalTargetCount: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   runnerStatus,
-  onStart,
-  onStop,
-  onPause,
+  onStartAll,
+  onStopAll,
+  onPauseAll,
   soundEnabled,
   onToggleSound,
   onOpenRailwayModal,
+  onOpenAddModal,
   uptimeSeconds,
-  remainingSeconds,
+  activeTargetCount,
+  totalTargetCount,
 }) => {
   const isRunning = runnerStatus === 'running';
   const isPaused = runnerStatus === 'paused';
@@ -39,117 +43,116 @@ export const Navbar: React.FC<NavbarProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getStatusLabel = () => {
-    switch (runnerStatus) {
-      case 'running':
-        return 'Running';
-      case 'paused':
-        return 'Paused';
-      case 'stopped':
-        return 'Stopped';
-      default:
-        return 'Ready';
-    }
-  };
-
   return (
-    <header className="border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md sticky top-0 z-30 transition-all">
+    <header className="border-b border-white/10 bg-[#121316]/90 backdrop-blur-xl sticky top-0 z-40 transition-all">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
-        {/* Logo & Title */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {/* Brand / Logo */}
+        <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
           <motion.div
-            whileHover={{ scale: 1.05, rotate: 10 }}
+            whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 flex items-center justify-center text-white shadow-md shadow-indigo-950/60 shrink-0"
+            className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white text-black flex items-center justify-center font-bold glow-white-sm shrink-0"
           >
             <RefreshCw
-              className={`w-4 h-4 sm:w-5 sm:h-5 ${isRunning ? 'animate-spin' : ''}`}
-              style={{ animationDuration: '3.5s' }}
+              className={`w-4 h-4 ${isRunning ? 'animate-spin' : ''}`}
+              style={{ animationDuration: '3s' }}
             />
           </motion.div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <h1 className="text-sm sm:text-base font-bold text-zinc-100 tracking-tight truncate">
-                <span className="hidden xs:inline">Auto </span>Refresher
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm sm:text-base font-bold text-white tracking-tight flex items-center gap-1.5">
+                <span>Auto Refresher</span>
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded border border-white/20 text-zinc-300 bg-white/5 hidden xs:inline-block">
+                  Pro
+                </span>
               </h1>
-              <span className="hidden lg:inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-                Railway Ready
-              </span>
             </div>
-            <p className="text-[11px] text-zinc-400 hidden md:block truncate">Keep-alive pinger & configurable reloader</p>
+            <p className="text-[11px] text-zinc-400 hidden sm:block truncate">
+              Multi-site keep-alive engine & 24/7 background pinger
+            </p>
           </div>
         </div>
 
-        {/* Center Dynamic Status Indicator (Desktop) */}
-        <div className="hidden md:flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 px-3 py-1 rounded-full text-xs font-medium text-zinc-300 shadow-2xs">
+        {/* Center Status Pill (Desktop & Tablet) */}
+        <div className="hidden md:flex items-center gap-2.5 bg-zinc-900/90 border border-white/10 px-3.5 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-sm">
           <span className="relative flex h-2 w-2">
             {isRunning && (
               <motion.span
-                animate={{ scale: [1, 2, 1], opacity: [0.8, 0, 0.8] }}
-                transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-                className="absolute inline-flex h-full w-full rounded-full bg-emerald-400"
+                animate={{ scale: [1, 2.2, 1], opacity: [0.9, 0, 0.9] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+                className="absolute inline-flex h-full w-full rounded-full bg-white"
               />
             )}
             <span
               className={`relative inline-flex rounded-full h-2 w-2 ${
                 isRunning
-                  ? 'bg-emerald-500'
+                  ? 'bg-white shadow-[0_0_8px_#ffffff]'
                   : isPaused
-                  ? 'bg-amber-400'
-                  : runnerStatus === 'stopped'
-                  ? 'bg-rose-500'
-                  : 'bg-zinc-500'
+                  ? 'bg-zinc-400'
+                  : 'bg-zinc-600'
               }`}
             />
           </span>
-          <span className="font-semibold text-zinc-200">{getStatusLabel()}</span>
-          {isRunning && remainingSeconds !== undefined && (
-            <span className="text-indigo-400 font-mono text-[11px] font-semibold">
-              ({remainingSeconds.toFixed(1)}s)
-            </span>
-          )}
-          {(isRunning || isPaused) && (
-            <span className="text-zinc-500 ml-1 pl-2 border-l border-zinc-800 font-mono text-[11px]">
+
+          <span className="font-semibold text-white">
+            {isRunning ? 'Running' : isPaused ? 'Paused' : 'Standby'}
+          </span>
+
+          <span className="text-zinc-500 font-mono text-[11px] border-l border-white/10 pl-2">
+            {activeTargetCount}/{totalTargetCount} active
+          </span>
+
+          {(isRunning || isPaused) && uptimeSeconds > 0 && (
+            <span className="text-zinc-400 font-mono text-[11px] border-l border-white/10 pl-2">
               {formatUptime(uptimeSeconds)}
             </span>
           )}
         </div>
 
-        {/* Action Controls - Scaled & Touch friendly on mobile */}
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-          {/* Quick Start / Stop / Pause Actions */}
+        {/* Global Controls & Actions */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Add Site Button */}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={onOpenAddModal}
+            className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold btn-glow-white"
+            title="Add a new website refresher target"
+          >
+            <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+            <span className="hidden xs:inline">Add Site</span>
+          </motion.button>
+
+          {/* Quick Start All / Pause / Stop All */}
           {!isRunning ? (
             <motion.button
-              id="navbar-start-btn"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={onStart}
-              className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm shadow-emerald-950/50 transition-colors"
+              onClick={onStartAll}
+              className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold btn-glow-dark"
+              title="Start auto-refreshing all targets"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Start</span>
+              <span>Start All</span>
             </motion.button>
           ) : (
-            <div className="flex items-center gap-1 sm:gap-1.5">
+            <div className="flex items-center gap-1">
               <motion.button
-                id="navbar-pause-btn"
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
-                onClick={onPause}
-                className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 transition-colors"
-                title="Pause countdown"
+                onClick={onPauseAll}
+                className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold btn-glow-dark"
+                title="Pause all active target countdowns"
               >
                 <Pause className="w-3 h-3 fill-current" />
                 <span className="hidden sm:inline">Pause</span>
               </motion.button>
-
               <motion.button
-                id="navbar-stop-btn"
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
-                onClick={onStop}
-                className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 text-white hover:bg-rose-500 shadow-sm shadow-rose-950/50 transition-colors"
-                title="Stop auto-refreshing"
+                onClick={onStopAll}
+                className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-zinc-900 text-zinc-300 hover:text-white hover:bg-zinc-800 border border-white/10"
+                title="Stop all refreshers"
               >
                 <Square className="w-3 h-3 fill-current" />
                 <span className="hidden sm:inline">Stop</span>
@@ -159,32 +162,29 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Sound Toggle */}
           <motion.button
-            id="navbar-sound-toggle-btn"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={onToggleSound}
-            title={soundEnabled ? 'Mute sound notification' : 'Enable sound notification'}
+            title={soundEnabled ? 'Mute sound notification' : 'Enable audio chime on refresh'}
             className={`p-1.5 sm:p-2 rounded-lg text-xs transition-colors border ${
               soundEnabled
-                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 shadow-xs'
-                : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 border-zinc-800'
+                ? 'bg-white text-black border-white glow-white-sm'
+                : 'bg-zinc-900 text-zinc-400 hover:text-white hover:bg-zinc-800 border-white/10'
             }`}
           >
-            {soundEnabled ? <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+            {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
           </motion.button>
 
-          {/* Railway Deploy Modal */}
+          {/* Railway Modal */}
           <motion.button
-            id="navbar-railway-guide-btn"
             whileHover={{ scale: 1.03 }}
             whileTap={{ scale: 0.97 }}
             onClick={onOpenRailwayModal}
-            className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700/60 transition-all shadow-xs"
-            title="Railway web url configuration and troubleshooting guide"
+            className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/15 transition-all shadow-xs"
+            title="Railway web url configuration & deploy guide"
           >
-            <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+            <Terminal className="w-3.5 h-3.5 text-zinc-300" />
             <span className="hidden sm:inline">Railway</span>
-            <span className="sm:hidden">Deploy</span>
           </motion.button>
         </div>
       </div>
