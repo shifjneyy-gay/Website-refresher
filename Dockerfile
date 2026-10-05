@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Cache package manifests
 COPY package*.json ./
-RUN npm ci --prefer-offline --no-audit --no-fund
+RUN npm install --prefer-offline --no-audit --no-fund
 
 # Copy source and build client + minified server
 COPY . .
@@ -21,7 +21,7 @@ ENV NODE_OPTIONS="--max-old-space-size=256"
 
 # Install production dependencies only
 COPY package*.json ./
-RUN npm ci --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts && npm cache clean --force
+RUN npm install --omit=dev --prefer-offline --no-audit --no-fund --ignore-scripts && npm cache clean --force
 
 # Copy precompiled client assets and minified server bundle
 COPY --from=builder /app/dist ./dist
